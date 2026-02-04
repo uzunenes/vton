@@ -1,5 +1,12 @@
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getStorage } from "firebase/storage";
+/**
+ * Firebase/GCP Integration
+ * NOTE: Currently unused - fal.ai storage is used instead
+ * Kept for potential future use
+ */
+
+import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
+import { getStorage, ref, uploadBytes, getDownloadURL, FirebaseStorage } from "firebase/storage";
+import { getAuth, signInAnonymously, Auth } from "firebase/auth";
 
 const firebaseConfig = {
     apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -11,22 +18,31 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase (Singleton pattern)
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-const storage = getStorage(app);
-const auth = getAuth(app);
+let app: FirebaseApp;
+let storage: FirebaseStorage;
+let auth: Auth;
 
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { getAuth, signInAnonymously } from "firebase/auth";
+try {
+    app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+    storage = getStorage(app);
+    auth = getAuth(app);
+} catch (e) {
+    console.warn('[Firebase] Initialization failed:', e);
+}
 
 export const uploadImage = async (file: Blob, path: string): Promise<string> => {
+    if (!auth || !storage) {
+        throw new Error('Firebase not initialized');
+    }
+
     console.log(`[Upload] Starting upload for ${path}`);
 
     // Ensure we are authenticated
     if (!auth.currentUser) {
         console.log("[Upload] No user, signing in anonymously...");
         try {
-            await signInAnonymously(auth);
-            console.log("[Upload] Signed in anonymously:", auth.currentUser?.uid);
+            const userCred = await signInAnonymously(auth);
+            console.log("[Upload] Signed in anonymously:", userCred.user?.uid);
         } catch (authError) {
             console.error("[Upload] Auth failed:", authError);
             throw new Error("Authentication failed. Please check Firebase Console > Auth > Sign-in method > Anonymous is ENABLED.");
@@ -41,9 +57,9 @@ export const uploadImage = async (file: Blob, path: string): Promise<string> => 
     try {
         const result = await uploadBytes(storageRef, file);
         console.log("[Upload] Upload success:", result);
-    } catch (uploadError: any) {
+    } catch (uploadError: unknown) {
         console.error("[Upload] Upload bytes failed:", uploadError);
-        if (uploadError.message && uploadError.message.includes("unauthorized")) {
+        if (uploadError instanceof Error && uploadError.message.includes("unauthorized")) {
             throw new Error("Storage Unauthorized. Check Firebase Console > Storage > Rules. Should allow write if request.auth != null.");
         }
         throw uploadError;

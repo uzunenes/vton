@@ -19,7 +19,7 @@ export default function CameraView({ onCapture, isProcessing, garmentBlob, onGar
 
     const { poseStatus, debugInfo, detectStaticImage } = usePoseTracker(videoRef, canvasRef, {
         referenceLandmarks,
-        matchThreshold: 0.68,
+        matchThreshold: 0.50,
     });
 
     useEffect(() => {

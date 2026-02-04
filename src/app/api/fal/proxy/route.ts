@@ -12,7 +12,16 @@ async function handleRequest(request: Request) {
     headers.delete("host");
     headers.delete("connection");
     headers.delete("x-fal-target-url");
-    headers.set("Authorization", `Key ${process.env.FAL_KEY}`);
+    
+    const falKey = process.env.FAL_KEY;
+    if (!falKey || falKey === 'your_fal_key_here') {
+        console.error("CRITICAL: FAL_KEY is missing or using placeholder in .env.local");
+        return NextResponse.json({ 
+            error: "Authentication required. Please set FAL_KEY in .env.local" 
+        }, { status: 401 });
+    }
+    
+    headers.set("Authorization", `Key ${falKey}`);
 
     // Create upstream request
     console.log(`PROXY ${request.method} DEBUG: Forwarding to`, targetUrl);
@@ -47,7 +56,16 @@ export async function GET(request: Request) {
     headers.delete("host");
     headers.delete("connection");
     headers.delete("x-fal-target-url");
-    headers.set("Authorization", `Key ${process.env.FAL_KEY}`);
+    
+    const falKey = process.env.FAL_KEY;
+    if (!falKey || falKey === 'your_fal_key_here') {
+        console.error("CRITICAL GET: FAL_KEY is missing or using placeholder in .env.local");
+        return NextResponse.json({ 
+            error: "Authentication required. Please set FAL_KEY in .env.local" 
+        }, { status: 401 });
+    }
+    
+    headers.set("Authorization", `Key ${falKey}`);
 
     console.log("PROXY GET DEBUG: Forwarding to", targetUrl);
 

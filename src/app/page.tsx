@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import CameraView from "@/components/CameraView";
 import { fal } from "@/lib/fal";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, Camera, Upload, Play, Download, Zap, ChevronRight, X } from "lucide-react";
+import { Sparkles, Camera, Upload, Play, Download, ChevronRight, Check, X, RefreshCw } from "lucide-react";
 import clsx from "clsx";
+import { usePipeline } from "@/hooks/usePipeline";
+import { PipelineWizard, PipelineStatus } from "@/components/pipeline";
+import { GarmentCategory, VTONOutput, VideoOutput, ApprovalDecision } from "@/types/pipeline";
 
 fal.config({
   proxyUrl: "/api/fal/proxy",
@@ -13,78 +16,121 @@ fal.config({
 
 type VtonCategory = "tops" | "bottoms" | "one-piece" | "accessory";
 
+// Pipeline configuration
+const PIPELINE_CONFIG = {
+  enableSegmentation: true,
+  enableABComparison: true,
+  enableFaceRestoration: false, // Keep disabled for now
+  enableVideo: true,
+  videoDuration: 5,
+  outputDirectory: 'outputs',
+};
+
 export default function Home() {
-  const [userImage, setUserImage] = useState<Blob | null>(null);
+  // Core state
   const [garmentImage, setGarmentImage] = useState<Blob | null>(null);
-  const [resultImage, setResultImage] = useState<string | null>(null);
-  const [resultVideo, setResultVideo] = useState<string | null>("/showcase.mp4");
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingTime, setProcessingTime] = useState(0);
-  const [debugLogs, setDebugLogs] = useState<{ time: string, msg: string }[]>([]);
+  const [garmentImageUrl, setGarmentImageUrl] = useState<string | null>(null);
+  const [userImageUrl, setUserImageUrl] = useState<string | null>(null);
   const [isStudioActive, setIsStudioActive] = useState(false);
-  const [status, setStatus] = useState("");
   const [vtonCategory, setVtonCategory] = useState<VtonCategory>("tops");
   const [garmentLandmarks, setGarmentLandmarks] = useState<any>(null);
   const garmentCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const handleCapture = (blob: Blob, autoStart: boolean = false) => {
-    setUserImage(blob);
-    setResultVideo(null);
-    if (autoStart && garmentImage) {
-      processVTON(blob, garmentImage);
-    }
-  };
+  // Pipeline state
+  const [showPipelineView, setShowPipelineView] = useState(false);
+  const [selectedVTONVariant, setSelectedVTONVariant] = useState<string | undefined>();
 
-  const handleGarmentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Use the pipeline hook
+  const pipeline = usePipeline({
+    config: PIPELINE_CONFIG,
+    onStepComplete: (stepId, result) => {
+      console.log(`[Pipeline] Step ${stepId} completed:`, result);
+    },
+    onPipelineComplete: (state) => {
+      console.log('[Pipeline] Complete:', state);
+    },
+    onError: (error, stepId) => {
+      console.error(`[Pipeline] Error in ${stepId}:`, error);
+    },
+  });
+
+  // Result display state
+  const resultImage = pipeline.vtonResults?.resultImageUrl ||
+    (pipeline.vtonResults?.variants?.fashn?.imageUrl) ||
+    (pipeline.vtonResults?.variants?.leffa?.imageUrl) ||
+    null;
+  const resultVideo = pipeline.videoResult?.videoUrl || null;
+
+  // Handle garment upload
+  const handleGarmentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      setGarmentImage(e.target.files[0]);
+      const file = e.target.files[0];
+      setGarmentImage(file);
+
+      // Upload to fal storage immediately
+      try {
+        const url = await pipeline.uploadImage(file);
+        setGarmentImageUrl(url);
+        console.log('[Garment] Uploaded:', url);
+      } catch (error) {
+        console.error('[Garment] Upload failed:', error);
+      }
     }
   };
 
-  const addDebugLog = (msg: string) => {
-    const now = new Date();
-    const time = now.toLocaleTimeString() + "." + now.getMilliseconds().toString().padStart(3, '0');
-    setDebugLogs(prev => [...prev, { time, msg }]);
-    logStep(msg).catch(console.error);
-  };
-
-  const logStep = async (message: string, data?: any) => {
+  // Handle camera capture
+  const handleCapture = async (blob: Blob, autoStart: boolean = false) => {
     try {
-      await fetch("/api/log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, data })
-      });
-    } catch (e) {
-      console.error("Failed to send log", e);
+      // Upload user image to fal storage
+      const url = await pipeline.uploadImage(blob);
+      setUserImageUrl(url);
+      console.log('[User] Captured and uploaded:', url);
+
+      // Auto-start pipeline if ready
+      if (autoStart && garmentImageUrl) {
+        startPipeline(url);
+      }
+    } catch (error) {
+      console.error('[User] Upload failed:', error);
     }
   };
 
-  const saveToDisk = async (url: string, type: "image" | "video") => {
-    try {
-      await fetch("/api/save-result", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, type }),
-      });
-    } catch (e) {
-      console.error("Auto-save failed", e);
+  // Start the pipeline
+  const startPipeline = useCallback(async (userImgUrl?: string) => {
+    const finalUserUrl = userImgUrl || userImageUrl;
+    if (!finalUserUrl || !garmentImageUrl) {
+      console.error('[Pipeline] Missing images');
+      return;
     }
-  };
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isProcessing) {
-      interval = setInterval(() => {
-        setProcessingTime(prev => prev + 1);
-      }, 1000);
-    } else {
-      setProcessingTime(0);
+    setShowPipelineView(true);
+
+    await pipeline.start({
+      garmentImageUrl,
+      garmentCategory: vtonCategory as GarmentCategory,
+      userImageUrl: finalUserUrl,
+      userPoseLandmarks: garmentLandmarks,
+    });
+  }, [pipeline, garmentImageUrl, userImageUrl, vtonCategory, garmentLandmarks]);
+
+  // Handle approval decision
+  const handleApproval = useCallback(async (decision: ApprovalDecision) => {
+    if (decision.selectedVariant) {
+      setSelectedVTONVariant(decision.selectedVariant);
     }
-    return () => clearInterval(interval);
-  }, [isProcessing]);
+    await pipeline.approve(decision);
+  }, [pipeline]);
 
-  // Draw garment skeleton effect (Apple Pro style)
+  // Handle video generation (manual trigger)
+  const handleGenerateVideo = useCallback(async () => {
+    if (!resultImage) return;
+
+    // If pipeline is complete, we need to generate video separately
+    // For now, this is handled within the pipeline
+    console.log('[Video] Manual generation requested');
+  }, [resultImage]);
+
+  // Draw garment skeleton effect
   useEffect(() => {
     if (!garmentLandmarks || !garmentCanvasRef.current || !garmentImage) return;
 
@@ -131,137 +177,86 @@ export default function Home() {
     };
   }, [garmentLandmarks, garmentImage]);
 
-  const generateGrokVideo = async (overrideImage?: string, accessoryUrl?: string) => {
-    const imgToUse = overrideImage || resultImage;
-    if (!imgToUse) return;
+  // Get selected VTON image URL
+  const getDisplayImageUrl = () => {
+    if (!pipeline.vtonResults) return resultImage;
 
-    setStatus("Rendering Cinema...");
-    setIsProcessing(true);
-
-    let grokPrompt = `An ultra-realistic 4k fashion runway video of THE EXACT SAME PERSON shown in the provided image. Face and body must be preserved 100% accurately. Professional high-end runway. No generic models. No gender changes. Cinematic lighting, fluid motion.`;
-
-    if (accessoryUrl) {
-      grokPrompt += ` The person is wearing the accessory from: ${accessoryUrl}. Integrate realistically.`;
-    } else {
-      grokPrompt += ` The person is wearing exactly the outfit shown.`;
-    }
-
-    try {
-      const result = await fal.subscribe("xai/grok-imagine-video/text-to-video", {
-        input: {
-          image_url: imgToUse,
-          prompt: grokPrompt,
-          duration: 6,
-          aspect_ratio: "9:16",
-          resolution: "720p"
-        },
-        logs: true,
-      });
-
-      const resData = result as any;
-      const videoUrl = resData.data?.video?.url || resData.video?.url;
-
-      if (videoUrl) {
-        setResultVideo(videoUrl);
-        saveToDisk(videoUrl, "video");
+    if (selectedVTONVariant && pipeline.vtonResults.variants) {
+      if (selectedVTONVariant === 'fashn' && pipeline.vtonResults.variants.fashn) {
+        return pipeline.vtonResults.variants.fashn.imageUrl;
       }
-    } catch (error: any) {
-      console.error("Grok Video failed:", error);
-    } finally {
-      setIsProcessing(false);
+      if (selectedVTONVariant === 'leffa' && pipeline.vtonResults.variants.leffa) {
+        return pipeline.vtonResults.variants.leffa.imageUrl;
+      }
     }
+    return pipeline.vtonResults.resultImageUrl;
   };
 
-  const processVTON = async (forceUserImage?: Blob, forceGarmentImage?: Blob) => {
-    const uImg = forceUserImage || userImage;
-    const gImg = forceGarmentImage || garmentImage;
-
-    if (!uImg || !gImg) return;
-
-    setIsProcessing(true);
-    setDebugLogs([]);
-    setStatus("Synchronizing...");
-
-    try {
-      const [userImageUrl, garmentImageUrl] = await Promise.all([
-        fal.storage.upload(uImg),
-        fal.storage.upload(gImg)
-      ]);
-
-      if (vtonCategory === "accessory") {
-        setResultImage(userImageUrl);
-        await generateGrokVideo(userImageUrl, garmentImageUrl);
-      } else {
-        const result: any = await fal.subscribe("fal-ai/idm-vton", {
-          input: {
-            human_image_url: userImageUrl,
-            garment_image_url: garmentImageUrl,
-            category: vtonCategory === "tops" ? "tops" : vtonCategory === "bottoms" ? "bottoms" : "one-piece",
-            description: "A high-end fashion garment, realistic fabric texture, perfect fit"
-          },
-          logs: true,
-        });
-
-        const output = result.data || result;
-        if (output && output.image && output.image.url) {
-          setResultImage(output.image.url);
-          saveToDisk(output.image.url, "image");
-          await generateGrokVideo(output.image.url);
-        } else {
-          throw new Error("No image URL returned");
-        }
-      }
-    } catch (error: any) {
-      setStatus("Error: " + error.message);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
+  const displayImageUrl = getDisplayImageUrl();
 
   return (
     <main className="min-h-screen bg-background text-foreground flex flex-col items-center">
+      {/* Pipeline View Overlay */}
+      <AnimatePresence>
+        {showPipelineView && pipeline.state && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-background/95 backdrop-blur-xl overflow-auto"
+          >
+            <button
+              onClick={() => setShowPipelineView(false)}
+              className="absolute top-6 right-6 p-3 rounded-full bg-white/5 hover:bg-white/10 transition-colors z-10"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <PipelineWizard
+              state={pipeline.state}
+              currentResult={pipeline.currentResult}
+              onApprove={handleApproval}
+              onRetry={() => pipeline.retry()}
+              onCancel={() => {
+                pipeline.cancel();
+                setShowPipelineView(false);
+              }}
+              progress={pipeline.progress}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Processing Status Bar (when pipeline is running but overlay is closed) */}
+      <AnimatePresence>
+        {pipeline.state && pipeline.isRunning && !showPipelineView && (
+          <motion.div
+            initial={{ y: -100 }}
+            animate={{ y: 0 }}
+            exit={{ y: -100 }}
+            className="fixed top-0 left-0 right-0 z-40 p-4"
+          >
+            <div className="max-w-md mx-auto">
+              <button onClick={() => setShowPipelineView(true)} className="w-full">
+                <PipelineStatus state={pipeline.state} progress={pipeline.progress} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Enhanced Preview with mask */}
       <AnimatePresence>
-        {resultImage && !resultVideo && (
+        {displayImageUrl && !resultVideo && !showPipelineView && (
           <motion.div
             initial={{ y: 30, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             className="mt-12 flex flex-col items-center"
           >
             <div className="relative w-32 h-44 rounded-2xl border border-white/10 overflow-hidden shadow-2xl">
-              <img src={resultImage} alt="VTON Result" className="w-full h-full object-cover" />
+              <img src={displayImageUrl} alt="VTON Result" className="w-full h-full object-cover" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
               <div className="absolute top-2 left-2 w-2 h-2 rounded-full bg-white/40" />
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      {/* Processing Overlay */}
-      <AnimatePresence>
-        {isProcessing && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 apple-glass flex flex-col items-center justify-center p-6"
-          >
-            <div className="w-full max-w-md text-center">
-              <div className="relative w-24 h-24 mx-auto mb-8">
-                <div className="absolute inset-0 border-4 border-white/5 rounded-full" />
-                <motion.div
-                  className="absolute inset-0 border-4 border-t-white rounded-full"
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                />
-              </div>
-              <h2 className="text-2xl font-semibold tracking-tight mb-2 italic">Refining details.</h2>
-              <p className="text-gray-400 font-medium text-sm tracking-wide uppercase">{status}</p>
-
-              <div className="mt-12 text-left bg-black/40 p-4 rounded-xl border border-white/5 font-mono text-[9px] text-gray-500 max-h-32 overflow-hidden">
-                {debugLogs.slice(-4).map((log, i) => (
-                  <div key={i} className="mb-1 opacity-50">[{log.time}] {log.msg}</div>
-                ))}
-              </div>
             </div>
           </motion.div>
         )}
@@ -269,7 +264,14 @@ export default function Home() {
 
       {/* Persistent Navigation */}
       <nav className="w-full max-w-6xl px-6 py-8 flex justify-between items-center z-10">
-        <div className="text-2xl font-bold tracking-tighter cursor-pointer" onClick={() => window.location.reload()}>VTON</div>
+        <div className="text-2xl font-bold tracking-tighter cursor-pointer" onClick={() => {
+          pipeline.reset();
+          setShowPipelineView(false);
+          setGarmentImage(null);
+          setGarmentImageUrl(null);
+          setUserImageUrl(null);
+          setIsStudioActive(false);
+        }}>VTON</div>
         <div className="flex gap-8 text-[13px] font-medium text-gray-400">
           <span className="text-white">Studio</span>
           <span className="cursor-not-allowed opacity-30">Collection</span>
@@ -277,7 +279,7 @@ export default function Home() {
         </div>
         <div className="hidden md:block">
           <div className="px-4 py-1.5 apple-surface text-[11px] font-bold tracking-widest uppercase text-white/40">
-            Professional Workflow
+            {PIPELINE_CONFIG.enableABComparison ? 'A/B Comparison Mode' : 'Professional Workflow'}
           </div>
         </div>
       </nav>
@@ -299,15 +301,27 @@ export default function Home() {
             <button
               onClick={() => setIsStudioActive(true)}
               className="apple-button flex items-center gap-2"
+              disabled={!garmentImage}
             >
               Enter Studio <ChevronRight className="w-4 h-4" />
             </button>
             <div className="flex items-center gap-3 px-6 py-3 apple-surface text-sm font-semibold text-gray-500">
               <Sparkles className="w-4 h-4 text-white/20" />
-              Advanced Neural Synthesis
+              FASHN + Leffa A/B
             </div>
           </div>
 
+          {/* Model Info */}
+          <div className="grid grid-cols-2 gap-4 text-xs">
+            <div className="p-4 rounded-xl bg-white/5 border border-white/5">
+              <p className="text-gray-500 mb-1">VTON Models</p>
+              <p className="text-white font-medium">FASHN v1.6 + Leffa</p>
+            </div>
+            <div className="p-4 rounded-xl bg-white/5 border border-white/5">
+              <p className="text-gray-500 mb-1">Video Model</p>
+              <p className="text-white font-medium">Kling 2.0 Master</p>
+            </div>
+          </div>
         </div>
 
         {/* Right Output Preview */}
@@ -316,18 +330,54 @@ export default function Home() {
             <div className="relative aspect-[3/4] bg-[#0c0c0c] rounded-[48px] overflow-hidden border border-white/5 shadow-[0_40px_100px_rgba(0,0,0,0.8)] group">
               {resultVideo ? (
                 <video src={resultVideo} autoPlay loop muted playsInline className="w-full h-full object-cover" />
-              ) : resultImage ? (
+              ) : displayImageUrl ? (
                 <div className="relative w-full h-full">
-                  <img src={resultImage} alt="Preview" className="w-full h-full object-cover" />
-                  <div className="absolute inset-x-0 bottom-10 px-10">
-                    <button
-                      onClick={() => generateGrokVideo()}
-                      className="w-full py-5 bg-white text-black font-bold rounded-2xl shadow-2xl flex items-center justify-center gap-3 hover:scale-[1.02] transition-all"
-                    >
-                      <Play className="w-5 h-5 fill-current" />
-                      Generate Motion
-                    </button>
-                  </div>
+                  <img src={displayImageUrl} alt="Preview" className="w-full h-full object-cover" />
+
+                  {/* A/B Comparison Selector */}
+                  {pipeline.vtonResults?.variants && Object.keys(pipeline.vtonResults.variants).length > 1 && (
+                    <div className="absolute top-4 left-4 right-4 flex gap-2">
+                      {pipeline.vtonResults.variants.fashn && (
+                        <button
+                          onClick={() => setSelectedVTONVariant('fashn')}
+                          className={clsx(
+                            'flex-1 py-2 text-xs font-bold rounded-lg transition-all',
+                            selectedVTONVariant === 'fashn' || (!selectedVTONVariant && pipeline.vtonResults.modelUsed === 'fashn-v1.6')
+                              ? 'bg-white text-black'
+                              : 'bg-black/50 text-white/70 hover:bg-black/70'
+                          )}
+                        >
+                          FASHN
+                        </button>
+                      )}
+                      {pipeline.vtonResults.variants.leffa && (
+                        <button
+                          onClick={() => setSelectedVTONVariant('leffa')}
+                          className={clsx(
+                            'flex-1 py-2 text-xs font-bold rounded-lg transition-all',
+                            selectedVTONVariant === 'leffa'
+                              ? 'bg-white text-black'
+                              : 'bg-black/50 text-white/70 hover:bg-black/70'
+                          )}
+                        >
+                          Leffa
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Generate Video Button */}
+                  {!pipeline.isRunning && !resultVideo && (
+                    <div className="absolute inset-x-0 bottom-10 px-10">
+                      <button
+                        onClick={() => setShowPipelineView(true)}
+                        className="w-full py-5 bg-white text-black font-bold rounded-2xl shadow-2xl flex items-center justify-center gap-3 hover:scale-[1.02] transition-all"
+                      >
+                        <Play className="w-5 h-5 fill-current" />
+                        View Pipeline
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-12">
@@ -375,7 +425,7 @@ export default function Home() {
           </div>
 
           <div className="relative aspect-[3/4] apple-surface flex flex-col items-center justify-center overflow-hidden cursor-pointer group hover:border-white/20 transition-all shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
-            <input type="file" onChange={handleGarmentUpload} className="absolute inset-0 opacity-0 z-20 cursor-pointer" />
+            <input type="file" accept="image/*" onChange={handleGarmentUpload} className="absolute inset-0 opacity-0 z-20 cursor-pointer" />
 
             {/* Pro Focus Brackets */}
             <div className="absolute inset-6 border border-white/10 pointer-events-none z-10 transition-opacity group-hover:opacity-40" />
@@ -393,6 +443,14 @@ export default function Home() {
                 <img src={URL.createObjectURL(garmentImage)} alt="Garment" className="w-full h-full object-cover grayscale-[0.3] brightness-90 group-hover:grayscale-0 group-hover:brightness-100 transition-all duration-700" />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-60" />
                 <canvas ref={garmentCanvasRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-40 mix-blend-screen scale-[0.9]" />
+
+                {/* Upload status indicator */}
+                {garmentImageUrl && (
+                  <div className="absolute bottom-4 left-4 flex items-center gap-2 px-3 py-1.5 bg-green-500/20 rounded-full">
+                    <Check className="w-3 h-3 text-green-500" />
+                    <span className="text-[10px] font-bold text-green-400">Uploaded</span>
+                  </div>
+                )}
               </motion.div>
             ) : (
               <div className="text-center z-10 space-y-4">
@@ -408,7 +466,7 @@ export default function Home() {
 
         {/* Step 2: Pose Alignment */}
         <div className="space-y-8 flex flex-col">
-          <div className="flex justify-between items-end px-2 h-[68px]"> {/* Fixed height matching Module 01 */}
+          <div className="flex justify-between items-end px-2 h-[68px]">
             <div className="space-y-1">
               <span className="text-[10px] font-bold text-white/30 uppercase tracking-[0.3em]">Module 02</span>
               <h2 className="text-3xl font-bold tracking-tight">Pose Alignment</h2>
@@ -426,7 +484,7 @@ export default function Home() {
             {isStudioActive ? (
               <CameraView
                 onCapture={(blob) => handleCapture(blob, true)}
-                isProcessing={isProcessing}
+                isProcessing={pipeline.isRunning}
                 garmentBlob={garmentImage}
                 onGarmentPoseDetected={setGarmentLandmarks}
               />
@@ -440,7 +498,7 @@ export default function Home() {
                 </p>
                 <button
                   onClick={() => setIsStudioActive(true)}
-                  disabled={!garmentImage}
+                  disabled={!garmentImage || !garmentImageUrl}
                   className="px-10 py-4 bg-white text-black rounded-full font-bold text-sm disabled:opacity-30 transition-all hover:scale-[1.02] active:scale-[0.98]"
                 >
                   Initialize Sensor
@@ -462,12 +520,22 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-10">
           <div className="flex items-center gap-3">
-            <div className="w-1.5 h-1.5 rounded-full bg-white/20" />
-            <span className="uppercase tracking-widest text-[10px] font-bold text-white/30">Studio Uplink Active</span>
+            <div className={clsx(
+              "w-1.5 h-1.5 rounded-full",
+              pipeline.isRunning ? "bg-blue-500 animate-pulse" : "bg-white/20"
+            )} />
+            <span className="uppercase tracking-widest text-[10px] font-bold text-white/30">
+              {pipeline.isRunning ? "Processing" : "Studio Uplink Active"}
+            </span>
           </div>
           <div className="flex items-center gap-3">
-            <div className="w-1.5 h-1.5 rounded-full bg-white/20" />
-            <span className="uppercase tracking-widest text-[10px] font-bold text-white/30">Neural Core Ready</span>
+            <div className={clsx(
+              "w-1.5 h-1.5 rounded-full",
+              garmentImageUrl ? "bg-green-500" : "bg-white/20"
+            )} />
+            <span className="uppercase tracking-widest text-[10px] font-bold text-white/30">
+              {garmentImageUrl ? "Garment Ready" : "Neural Core Ready"}
+            </span>
           </div>
         </div>
       </footer>

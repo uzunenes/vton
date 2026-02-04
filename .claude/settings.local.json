@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx next build)",
+      "Bash(timeout:*)",
+      "Bash(npm run dev:*)",
+      "Bash(taskkill:*)",
+      "Bash(tasklist:*)",
+      "Bash(ls -la \"C:\\\\Users\\\\euzun17\\\\.claude-worktrees\\\\antigravity-vton\\\\cool-visvesvaraya\\\\.env\"*)"
+    ]
+  }
+}

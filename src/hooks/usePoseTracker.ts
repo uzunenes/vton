@@ -53,7 +53,7 @@ export const usePoseTracker = (
         alignmentThreshold = 0.15,
         stabilityThreshold = 0.04, // Relaxed from 0.02
         stabilityWindow = 10,
-        matchThreshold = 0.85,
+        matchThreshold = 0.50,
         referenceLandmarks = null
     } = options;
 
