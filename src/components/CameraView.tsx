@@ -10,9 +10,10 @@ interface CameraViewProps {
     isProcessing: boolean;
     garmentBlob?: Blob | null;
     onGarmentPoseDetected?: (landmarks: any) => void;
+    onClose?: () => void;
 }
 
-export default function CameraView({ onCapture, isProcessing, garmentBlob, onGarmentPoseDetected }: CameraViewProps) {
+export default function CameraView({ onCapture, isProcessing, garmentBlob, onGarmentPoseDetected, onClose }: CameraViewProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [referenceLandmarks, setReferenceLandmarks] = useState<any>(null);

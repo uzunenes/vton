@@ -64,10 +64,20 @@ export async function executeVideoGeneration(
       throw new Error("No source image available for video generation");
     }
 
-    // Build the prompt
-    const prompt = modelRegistry.getFashionVideoPrompt(
-      `The model is wearing a ${input.inputs.garmentCategory} garment. Showcase the clothing with elegant movement.`,
-    );
+    // Build the dynamic prompt based on user metadata
+    const { userAge, userGender, userCountry, garmentCategory } = input.inputs;
+    const ageStr = userAge ? `${userAge}-year-old ` : '';
+    const genderStr = userGender === 'male' ? 'man' : userGender === 'female' ? 'woman' : 'person';
+    const countryStr = userCountry ? ` in ${userCountry}` : '';
+    
+    const contextStr = `${ageStr}${genderStr}${countryStr}`;
+    
+    // Example: "30-year-old man in Turkey trying on a t-shirt, walking on a street, cinematic lighting"
+    const dynamicPrompt = `A ${contextStr} wearing a high-quality ${garmentCategory}. ` +
+      `The scene shows the person walking confidently, showcase the clothing with realistic movement and textures. ` +
+      `Cinematic fashion runway style, high resolution.`;
+
+    const prompt = modelRegistry.getFashionVideoPrompt(dynamicPrompt);
 
     // Build video input
     const videoInput = modelRegistry.buildVideoInput(

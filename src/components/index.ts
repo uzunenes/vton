@@ -1,7 +1,6 @@
 /**
- * Pipeline Components Index
+ * Pipeline Components Index - Re-export from pipeline subfolder
  */
-
-export { ProgressTimeline, ProgressBar } from './ProgressTimeline';
-export { ApprovalPanel } from './ApprovalPanel';
-export { PipelineWizard, PipelineStatus } from './PipelineWizard';
+export { ProgressTimeline, ProgressBar } from './pipeline/ProgressTimeline';
+export { ApprovalPanel } from './pipeline/ApprovalPanel';
+export { PipelineWizard, PipelineStatus } from './pipeline/PipelineWizard';
