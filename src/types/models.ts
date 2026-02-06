@@ -61,6 +61,7 @@ export interface SegmentationModelConfig extends ModelConfig {
   supportsAutoSegment: boolean;
   supportsPointPrompt: boolean;
   supportsBoxPrompt: boolean;
+  supportsTextPrompt?: boolean;
 }
 
 // All model types union
