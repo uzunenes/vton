@@ -157,11 +157,11 @@ export interface VTONOutput {
   modelUsed: string;
   // For A/B comparison
   variants?: {
-    fashn?: {
+    fashnv15?: {
       imageUrl: string;
       processingTime: number;
     };
-    leffa?: {
+    fashnv16?: {
       imageUrl: string;
       processingTime: number;
     };

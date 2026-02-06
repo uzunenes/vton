@@ -72,11 +72,23 @@ export type AnyModelConfig =
 
 // Category mapping for VTON models
 export const CATEGORY_MAPPING: Record<string, Record<string, string>> = {
+  "fashn-v1.5": {
+    tops: "tops",
+    bottoms: "bottoms",
+    "one-piece": "one-pieces",
+    accessory: "auto",
+  },
   "fashn-v1.6": {
     tops: "tops",
     bottoms: "bottoms",
     "one-piece": "one-pieces",
     accessory: "auto",
+  },
+  "cat-vton": {
+    tops: "upper",
+    bottoms: "lower",
+    "one-piece": "overall",
+    accessory: "upper",
   },
   leffa: {
     tops: "upper_body",
@@ -94,11 +106,67 @@ export const CATEGORY_MAPPING: Record<string, Record<string, string>> = {
 
 // VTON Models Registry
 export const VTON_MODELS: Record<string, VTONModelConfig> = {
+  "fashn-v1.5": {
+    id: "fashn-v1.5",
+    provider: "fal-ai",
+    modelPath: "fal-ai/fashn/tryon/v1.5",
+    displayName: "FASHN v1.5",
+    description:
+      "High precision virtual try-on with excellent garment fidelity",
+    costPerRun: 0.05,
+    averageTimeSeconds: 12,
+    category: "vton",
+    supportedGarmentTypes: ["upper_body", "lower_body", "full_body"],
+    maxResolution: { width: 864, height: 1296 },
+    supportsInpaintingMask: false,
+    inputSchema: {
+      model_image: "string",
+      garment_image: "string",
+      category: "string",
+      mode: "string",
+      num_samples: "number",
+    },
+    outputSchema: {
+      images: "array", // Array of File objects with url
+    },
+    parameterMapping: {
+      humanImage: "model_image",
+      garmentImage: "garment_image",
+      category: "category",
+    },
+  },
+  "cat-vton": {
+    id: "cat-vton",
+    provider: "fal-ai",
+    modelPath: "fal-ai/cat-vton",
+    displayName: "CAT-VTON (Legacy)",
+    description:
+      "State-of-the-art virtual try-on with improved cloth warping and texture preservation",
+    costPerRun: 0.03,
+    averageTimeSeconds: 8,
+    category: "vton",
+    supportedGarmentTypes: ["upper_body", "lower_body", "full_body"],
+    maxResolution: { width: 1024, height: 1024 },
+    supportsInpaintingMask: false,
+    inputSchema: {
+      human_image_url: "string",
+      garment_image_url: "string",
+      cloth_type: "string",
+    },
+    outputSchema: {
+      image: { url: "string" },
+    },
+    parameterMapping: {
+      humanImage: "human_image_url",
+      garmentImage: "garment_image_url",
+      category: "cloth_type",
+    },
+  },
   "fashn-v1.6": {
     id: "fashn-v1.6",
     provider: "fal-ai",
     modelPath: "fal-ai/fashn/tryon/v1.6",
-    displayName: "FASHN v1.6",
+    displayName: "FASHN v1.6 (Legacy)",
     description:
       "High precision virtual try-on, excellent for text and patterns on garments",
     costPerRun: 0.05,
@@ -111,11 +179,14 @@ export const VTON_MODELS: Record<string, VTONModelConfig> = {
       model_image: "string",
       garment_image: "string",
       category: "string",
-      adjust_body: "boolean",
-      restore_clothes: "boolean",
+      mode: "string",
+      garment_photo_type: "string",
+      num_samples: "number",
+      segmentation_free: "boolean",
+      output_format: "string",
     },
     outputSchema: {
-      image: { url: "string", width: "number", height: "number" },
+      images: "array", // Array of File objects with url
     },
     parameterMapping: {
       humanImage: "model_image",
@@ -127,7 +198,7 @@ export const VTON_MODELS: Record<string, VTONModelConfig> = {
     id: "leffa",
     provider: "fal-ai",
     modelPath: "fal-ai/leffa/virtual-tryon",
-    displayName: "Leffa VTON",
+    displayName: "Leffa VTON (Legacy)",
     description:
       "Commercial quality virtual try-on with inference step control",
     costPerRun: 0.04,
@@ -183,11 +254,40 @@ export const VTON_MODELS: Record<string, VTONModelConfig> = {
 
 // Video Models Registry
 export const VIDEO_MODELS: Record<string, VideoModelConfig> = {
+  "kling-o3-pro": {
+    id: "kling-o3-pro",
+    provider: "fal-ai",
+    modelPath: "fal-ai/kling-video/o3/pro/image-to-video",
+    displayName: "Kling O3 Pro",
+    description: "Latest Kling O3 Pro model with superior quality and motion (3-15s)",
+    costPerRun: 2.5,
+    averageTimeSeconds: 180,
+    category: "video",
+    supportedDurations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    supportedResolutions: ["720p", "1080p"],
+    supportsImageToVideo: true,
+    supportsTextToVideo: false,
+    inputSchema: {
+      image_url: "string",
+      prompt: "string",
+      end_image_url: "string",
+      duration: "string",
+      generate_audio: "boolean",
+    },
+    outputSchema: {
+      video: { url: "string", file_size: "number", content_type: "string" },
+    },
+    parameterMapping: {
+      imageUrl: "image_url",
+      prompt: "prompt",
+      duration: "duration",
+    },
+  },
   "kling-2.0-master": {
     id: "kling-2.0-master",
     provider: "fal-ai",
     modelPath: "fal-ai/kling-video/v2/master/image-to-video",
-    displayName: "Kling 2.0 Master",
+    displayName: "Kling 2.0 Master (Legacy)",
     description: "Premium quality fashion runway video generation",
     costPerRun: 1.0,
     averageTimeSeconds: 120,
@@ -287,14 +387,17 @@ export const SEGMENTATION_MODELS: Record<string, SegmentationModelConfig> = {
     supportsTextPrompt: true,
     inputSchema: {
       image_url: "string",
-      prompts: "array",
-      text_prompt: "string",
+      prompt: "string",
+      point_prompts: "array",
+      box_prompts: "array",
+      apply_mask: "boolean",
     },
     outputSchema: {
+      image: { url: "string" },
       masks: "array",
-      combined_mask: { url: "string" },
-      bounding_boxes: "array",
-      confidence_scores: "array",
+      metadata: "array",
+      scores: "array",
+      boxes: "array",
     },
   },
   "sam2-image": {
@@ -346,10 +449,10 @@ export const SEGMENTATION_MODELS: Record<string, SegmentationModelConfig> = {
 // Default model selections
 export const DEFAULT_MODELS = {
   vton: {
-    primary: "fashn-v1.6",
-    secondary: "leffa",
+    primary: "fashn-v1.5",
+    secondary: "fashn-v1.6",
   },
-  video: "kling-2.0-master",
+  video: "kling-o3-pro",
   segmentation: "sam3-image", // Upgraded to SAM3 (2025): 2x better accuracy, 40% faster, supports text prompts
 };
 

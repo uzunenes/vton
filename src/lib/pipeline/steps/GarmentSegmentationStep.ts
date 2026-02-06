@@ -1,9 +1,8 @@
 /**
  * Garment Segmentation Step
- * Uses SAM2 or SAM3 to segment the garment from background
+ * Uses SAM3 to segment the garment from background
  *
  * Features:
- * - Robust URL extraction for multiple Fal.ai model formats
  * - Circuit breaker protection
  * - Automatic retry with exponential backoff
  */
@@ -39,42 +38,17 @@ export async function executeGarmentSegmentation(
       throw new Error("No garment image URL provided");
     }
 
-    // Build input based on model type
-    let segmentInput: any;
-    
-    // Use interactive prompts if provided, otherwise fallback to center point
-    const prompts = input.inputs.segmentationPrompts && input.inputs.segmentationPrompts.length > 0
-      ? input.inputs.segmentationPrompts
-      : [{ x: 512, y: 512, label: 1 }];
+    // For SAM3, use box_prompts to capture the entire garment
+    // Box format: [x_min, y_min, x_max, y_max] array (not object!)
+    const segmentInput = {
+      image_url: garmentImageUrl,
+      box_prompts: [
+        [50, 50, 974, 974], // Large box covering most of the image
+      ],
+      apply_mask: true,
+    };
 
-    if (modelConfig.id === "sam3-image") {
-      // SAM-3: Automatic segmentation or interactive
-      segmentInput = {
-        image_url: garmentImageUrl,
-        prompts: prompts,
-      };
-      console.log("[Segmentation] Using SAM-3 with prompts:", prompts.length);
-    } else if (modelConfig.id === "sam2-auto") {
-      // SAM2 Auto-Segment: No prompts needed, automatic segmentation
-      segmentInput = {
-        image_url: garmentImageUrl,
-      };
-      console.log("[Segmentation] Using SAM2 auto-segment (no prompts)");
-    } else if (modelConfig.id === "sam2-image") {
-      // SAM2 Image: Uses point/box prompts
-      segmentInput = {
-        image_url: garmentImageUrl,
-        point_coords: [[512, 512]], // Center point
-        point_labels: [1], // Foreground
-      };
-      console.log("[Segmentation] Using SAM2 image with point prompts");
-    } else {
-      // Default fallback
-      segmentInput = {
-        image_url: garmentImageUrl,
-      };
-      console.log("[Segmentation] Using default input format");
-    }
+    console.log("[Segmentation] SAM3 input:", JSON.stringify(segmentInput, null, 2));
 
     // Check for mock mode
     if (input.config.useMock) {
@@ -92,7 +66,7 @@ export async function executeGarmentSegmentation(
         success: true,
         data: output,
         processingTimeMs: 100, // Fast mock time
-        modelUsed: "mock-sam2",
+        modelUsed: "mock-sam3",
         inputUrls: [garmentImageUrl],
         outputUrls: [garmentImageUrl],
         metadata: { isMock: true },
@@ -101,7 +75,7 @@ export async function executeGarmentSegmentation(
     }
 
     if (env.enableDebugLogs) {
-      console.log("[Segmentation] Calling model with input:", segmentInput);
+      console.log("[Segmentation] Calling SAM3 with input:", segmentInput);
     }
 
     // Execute with circuit breaker and retry for resilience
@@ -126,102 +100,149 @@ export async function executeGarmentSegmentation(
 
     const processingTimeMs = Date.now() - startTime;
 
-    // Extract results
-    const outputData = result.data || result;
-
-    // Always log basic info, detailed info only if debug enabled
-    console.log("[Segmentation] Model used:", modelConfig.modelPath);
-    console.log("[Segmentation] Raw output keys:", Object.keys(outputData));
-    
-    if (env.enableDebugLogs) {
-      console.log("[Segmentation] Full output data:", JSON.stringify(outputData, null, 2));
-      console.log("[Segmentation] outputData.combined_mask:", outputData.combined_mask);
-      console.log("[Segmentation] outputData.image:", outputData.image);
-      console.log("[Segmentation] outputData.masks:", outputData.masks);
-      console.log("[Segmentation] typeof outputData.image:", typeof outputData.image);
-      if (outputData.image) {
-        console.log("[Segmentation] outputData.image.url:", outputData.image.url);
-      }
-    }
-
-    // Extract URLs with robust fallback logic
-    let segmentedImageUrl: string | undefined;
-    let maskUrl: string | undefined;
-
-    // Priority 1: Use combined_mask (common for auto-segmentation)
-    if (outputData.combined_mask) {
-      if (typeof outputData.combined_mask === 'object' && outputData.combined_mask !== null && outputData.combined_mask.url) {
-        maskUrl = outputData.combined_mask.url;
-        segmentedImageUrl = maskUrl;
-        console.log("[Segmentation] ✓ Using combined_mask.url");
-      } else if (typeof outputData.combined_mask === 'string' && outputData.combined_mask.startsWith('http')) {
-        maskUrl = outputData.combined_mask;
-        segmentedImageUrl = maskUrl;
-        console.log("[Segmentation] ✓ Using combined_mask string");
-      }
-    }
-
-    // Priority 2: Use image field (SAM-3 primary output)
-    if (!segmentedImageUrl && outputData.image) {
-      if (typeof outputData.image === 'object' && outputData.image !== null && outputData.image.url) {
-        segmentedImageUrl = outputData.image.url;
-        if (!maskUrl) maskUrl = outputData.image.url;
-        console.log("[Segmentation] ✓ Using image.url");
-      } else if (typeof outputData.image === 'string' && outputData.image.startsWith('http')) {
-        segmentedImageUrl = outputData.image;
-        if (!maskUrl) maskUrl = outputData.image;
-        console.log("[Segmentation] ✓ Using image string");
-      }
-    }
-
-    // Priority 3: Use first mask from masks array
-    if (!maskUrl && outputData.masks && Array.isArray(outputData.masks) && outputData.masks.length > 0) {
-      const firstMask = outputData.masks[0];
-      if (typeof firstMask === 'object' && firstMask !== null && (firstMask as any).url) {
-        maskUrl = (firstMask as any).url;
-        if (!segmentedImageUrl) segmentedImageUrl = (firstMask as any).url;
-        console.log("[Segmentation] ✓ Using masks[0].url");
-      } else if (typeof firstMask === 'string' && firstMask.startsWith('http')) {
-        maskUrl = firstMask;
-        if (!segmentedImageUrl) segmentedImageUrl = firstMask;
-        console.log("[Segmentation] ✓ Using masks[0] string");
-      }
-    }
-
-    // Priority 4: Check if outputData itself is a URL string
-    if (!segmentedImageUrl && typeof outputData === 'string' && outputData.startsWith('http')) {
-      maskUrl = outputData;
-      segmentedImageUrl = outputData;
-      console.log("[Segmentation] ✓ Using outputData as raw URL string");
-    }
-
-    // Priority 5: Check for generic url property
-    if (!segmentedImageUrl && outputData.url && typeof outputData.url === 'string') {
-      maskUrl = outputData.url;
-      segmentedImageUrl = outputData.url;
-      console.log("[Segmentation] ✓ Using outputData.url");
-    }
-
-    // Final validation
-    if (!segmentedImageUrl || !maskUrl) {
-      const availableKeys = Object.keys(outputData).join(', ');
-      const errorDetails = {
-        model: modelConfig.modelPath,
-        availableKeys: availableKeys,
-        imageType: typeof outputData.image,
-        masksType: typeof outputData.masks,
-        masksLength: Array.isArray(outputData.masks) ? outputData.masks.length : 0,
+    // Write result to file for debugging
+    try {
+      const fs = require('fs');
+      const debugData = {
+        timestamp: new Date().toISOString(),
+        result: result,
+        resultData: result.data,
+        resultOutput: result.output,
+        resultKeys: Object.keys(result),
+        resultDataKeys: result.data ? Object.keys(result.data) : null,
       };
-      console.error("[Segmentation] ✗ Failed to extract URL. Details:", errorDetails);
+      fs.writeFileSync('/workspaces/vton/sam3_debug.json', JSON.stringify(debugData, null, 2));
+      console.log("[Segmentation] Debug data written to sam3_debug.json");
+    } catch (e) {
+      console.error("[Segmentation] Failed to write debug file:", e);
+    }
+
+    // CRITICAL: Log the ENTIRE result object structure
+    console.log("[Segmentation] ========================================");
+    console.log("[Segmentation] RAW RESULT:");
+    console.log("[Segmentation] typeof result:", typeof result);
+    console.log("[Segmentation] result constructor:", result?.constructor?.name);
+    
+    // Try to stringify the entire result
+    try {
+      console.log("[Segmentation] result JSON:", JSON.stringify(result, null, 2));
+    } catch (e) {
+      console.log("[Segmentation] result not JSON-stringifiable:", e);
+    }
+    
+    // Check specific paths
+    console.log("[Segmentation] result.data:", result.data);
+    console.log("[Segmentation] result.output:", result.output);
+    console.log("[Segmentation] result itself keys:", Object.keys(result));
+    
+    if (result.data) {
+      console.log("[Segmentation] result.data keys:", Object.keys(result.data));
+      console.log("[Segmentation] result.data.image:", result.data.image);
+      console.log("[Segmentation] result.data.masks:", result.data.masks);
+    }
+    
+    console.log("[Segmentation] ========================================");
+    
+    // Try to extract outputData from different paths
+    let outputData = result.data || result;
+    
+    console.log("[Segmentation] Available keys:", Object.keys(outputData));
+    
+    // Force-extract each property manually 
+    const imageField = outputData['image'];
+    const masksField = outputData['masks'];
+    const metadataField = outputData['metadata'];
+    const scoresField = outputData['scores'];
+    const boxesField = outputData['boxes'];
+    
+    console.log("[Segmentation] Extracted image:", imageField);
+    console.log("[Segmentation] Extracted masks:", masksField);
+    console.log("[Segmentation] Extracted metadata:", metadataField);
+    
+    // Check types
+    console.log("[Segmentation] typeof image:", typeof imageField);
+    console.log("[Segmentation] typeof masks:", typeof masksField);
+    
+    // For masks array
+    if (masksField) {
+      console.log("[Segmentation] Is masks array?:", Array.isArray(masksField));
+      if (Array.isArray(masksField)) {
+        console.log("[Segmentation] Masks length:", masksField.length);
+        if (masksField.length > 0) {
+          console.log("[Segmentation] First mask:", masksField[0]);
+        }
+      }
+    }
+    
+    // For image field
+    if (imageField) {
+      console.log("[Segmentation] Is image string?:", typeof imageField === 'string');
+      console.log("[Segmentation] Is image object?:", typeof imageField === 'object');
+      if (typeof imageField === 'object' && imageField !== null) {
+        console.log("[Segmentation] Image has url?:", 'url' in imageField);
+        console.log("[Segmentation] Image.url:", imageField.url);
+      }
+    }
+    
+    console.log("[Segmentation] ===== EXTRACTION END =====");
+
+    // SAM3 API returns: image (optional primary mask) and masks (required array)
+    // According to docs: image is "Primary segmented mask preview", masks is "Segmented mask images"
+    let segmentedImageUrl: string;
+    let maskUrl: string;
+
+    // Priority 1: Use 'image' field if it has url
+    if (imageField && typeof imageField === 'object' && imageField.url) {
+      segmentedImageUrl = imageField.url;
+      maskUrl = imageField.url;
+      console.log("[Segmentation] ✓ Using image.url");
+    }
+    // Priority 2: Check if image is a string directly
+    else if (imageField && typeof imageField === 'string') {
+      segmentedImageUrl = imageField;
+      maskUrl = imageField;
+      console.log("[Segmentation] ✓ Using image string");
+    }
+    // Priority 3: Use first mask from masks array
+    else if (masksField && Array.isArray(masksField) && masksField.length > 0) {
+      const firstMask = masksField[0];
+      if (typeof firstMask === 'object' && firstMask.url) {
+        maskUrl = firstMask.url;
+        segmentedImageUrl = maskUrl;
+        console.log("[Segmentation] ✓ Using masks[0].url");
+      } else if (typeof firstMask === 'string') {
+        maskUrl = firstMask;
+        segmentedImageUrl = maskUrl;
+        console.log("[Segmentation] ✓ Using masks[0] string");
+      } else {
+        throw new Error(`masks[0] format unexpected: ${typeof firstMask}`);
+      }
+    }
+    else {
+      // Create detailed error with all extraction info
+      const debugInfo = {
+        availableKeys: Object.keys(outputData),
+        imageFieldType: typeof imageField,
+        imageFieldValue: imageField,
+        masksFieldType: typeof masksField,
+        masksFieldValue: masksField,
+        masksIsArray: Array.isArray(masksField),
+        masksLength: Array.isArray(masksField) ? masksField.length : 'N/A',
+        firstMaskIfExists: Array.isArray(masksField) && masksField.length > 0 ? masksField[0] : 'N/A',
+      };
+      
+      console.error("[Segmentation] No mask found in output. Debug info:", JSON.stringify(debugInfo, null, 2));
+      console.error("[Segmentation] Full output:", outputData);
+      
       throw new Error(
-        `No valid image URL found in segmentation output. ` +
-        `Model: ${modelConfig.modelPath}. ` +
-        `Available keys: [${availableKeys}]. ` +
-        `Check console logs for detailed debugging info.`
+        `No mask returned from SAM3.\n` +
+        `Available keys: ${Object.keys(outputData).join(', ')}\n` +
+        `image type: ${typeof imageField}, value: ${JSON.stringify(imageField)}\n` +
+        `masks type: ${typeof masksField}, is array: ${Array.isArray(masksField)}, ` +
+        `length: ${Array.isArray(masksField) ? masksField.length : 'N/A'}\n` +
+        `First mask: ${Array.isArray(masksField) && masksField.length > 0 ? JSON.stringify(masksField[0]) : 'N/A'}`
       );
     }
-
-    console.log("[Segmentation] ✓ Final URLs - segmented:", segmentedImageUrl, "mask:", maskUrl);
 
     const output: SegmentationOutput = {
       segmentedImageUrl,
@@ -238,7 +259,7 @@ export async function executeGarmentSegmentation(
       outputUrls: [segmentedImageUrl, maskUrl],
       metadata: {
         modelPath: modelConfig.modelPath,
-        availableKeys: Object.keys(outputData),
+        box_prompts: segmentInput.box_prompts,
       },
       timestamp: new Date(),
     };
@@ -260,18 +281,19 @@ export async function executeGarmentSegmentation(
   }
 }
 
+// Alternative: Use auto-segment for full automatic segmentation
 export async function executeAutoSegmentation(
   garmentImageUrl: string,
 ): Promise<StepResult<SegmentationOutput>> {
   const startTime = Date.now();
-  const modelConfig = modelRegistry.getSegmentationModel("sam2-auto");
+  const modelConfig = modelRegistry.getSegmentationModel("sam3-image");
 
   if (!modelConfig) {
     return {
       success: false,
-      error: "SAM2 auto-segment model not found",
+      error: "SAM3 model not found",
       processingTimeMs: Date.now() - startTime,
-      modelUsed: "sam2-auto",
+      modelUsed: "sam3-image",
       inputUrls: [garmentImageUrl],
       outputUrls: [],
       metadata: {},
@@ -290,9 +312,10 @@ export async function executeAutoSegmentation(
     const processingTimeMs = Date.now() - startTime;
     const outputData = result.data || result;
 
-    const maskUrl = outputData.combined_mask?.url || outputData.image?.url || (Array.isArray(outputData.masks) && outputData.masks[0]?.url);
+    // Auto-segment returns combined mask
+    const maskUrl = outputData.combined_mask?.url;
     if (!maskUrl) {
-      throw new Error("No mask found in auto-segmentation output");
+      throw new Error("No combined mask returned");
     }
 
     const output: SegmentationOutput = {

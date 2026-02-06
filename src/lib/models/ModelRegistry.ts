@@ -150,19 +150,31 @@ export class ModelRegistry {
 
     // Add duration if supported
     if (model.supportedDurations.includes(duration)) {
-      input[mapping.duration] = duration;
+      // Kling O3 Pro expects duration as string
+      if (modelId.startsWith('kling-o3')) {
+        input[mapping.duration] = String(duration);
+      } else {
+        input[mapping.duration] = duration;
+      }
     } else {
       // Use closest supported duration
       const closest = model.supportedDurations.reduce((prev, curr) =>
         Math.abs(curr - duration) < Math.abs(prev - duration) ? curr : prev
       );
-      input[mapping.duration] = closest;
+      if (modelId.startsWith('kling-o3')) {
+        input[mapping.duration] = String(closest);
+      } else {
+        input[mapping.duration] = closest;
+      }
     }
 
     // Add model-specific defaults
     if (modelId === 'kling-2.0-master') {
       input.cfg_scale = 0.7;
       input.negative_prompt = 'blur, distort, low quality, deformed';
+    } else if (modelId === 'kling-o3-pro') {
+      // Kling O3 Pro uses simpler parameters
+      // No cfg_scale or negative_prompt needed
     }
 
     // Merge additional params

@@ -58,7 +58,7 @@ export const PIPELINE_STEPS: StepDefinition[] = [
   {
     id: "segmentation",
     name: "Garment Segmentation",
-    description: "Remove background from garment image using SAM2",
+    description: "Remove background from garment image using SAM3",
     requiresApproval: true,
     canRetry: true,
     maxRetries: 2,

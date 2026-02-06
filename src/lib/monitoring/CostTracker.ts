@@ -2,12 +2,13 @@
  * Cost Tracker
  * Tracks API costs per session for budget monitoring
  *
- * Model Costs (as of 2024):
- * - SAM2 Segmentation: $0.02/run
- * - FASHN VTON: $0.05/run
- * - Leffa VTON: $0.04/run
- * - Kling 2.0 Video (5s): $1.00/run
- * - Kling 2.0 Video (10s): $2.00/run
+ * Model Costs (as of 2026):
+ * - SAM3 Segmentation: $0.005/run
+ * - FASHN v1.5 VTON: $0.05/run
+ * - FASHN v1.6 VTON (Legacy): $0.05/run
+ * - CAT-VTON (Legacy): $0.03/run
+ * - Kling O3 Pro Video (5s): $2.50/run
+ * - Kling 2.0 Video (5s): $1.00/run (Legacy)
  */
 
 import { env } from '@/lib/config/environment';
@@ -31,21 +32,27 @@ export interface CostSummary {
 // Model cost configuration
 const MODEL_COSTS: Record<string, number> = {
   // Segmentation
-  'sam2-image': 0.02,
-  'sam2-auto': 0.02,
+  'sam3-image': 0.005,
+  'sam2-image': 0.02,  // Legacy
+  'sam2-auto': 0.02,   // Legacy
 
   // VTON
-  'fashn-v1.6': 0.05,
-  'leffa': 0.04,
-  'idm-vton': 0.03,
+  'fashn-v1.5': 0.05,
+  'fashn-v1.6': 0.05,  // Legacy
+  'cat-vton': 0.03,    // Legacy
+  'leffa': 0.04,       // Legacy
+  'idm-vton': 0.03,    // Legacy
 
   // Video
-  'kling-v2-master': 1.00,
-  'kling-v2-master-10s': 2.00,
-  'minimax-hailuo': 0.50,
+  'kling-o3-pro': 2.50,
+  'kling-o3-standard': 2.00,    // Legacy
+  'kling-v2-master': 1.00,      // Legacy
+  'kling-v2-master-10s': 2.00,  // Legacy
+  'minimax-hailuo': 0.50,       // Legacy
 
   // Mock (no cost)
-  'mock-sam2': 0,
+  'mock-sam3': 0,
+  'mock-sam2': 0,  // Legacy
   'mock-vton': 0,
   'mock-kling': 0,
 };
@@ -182,20 +189,18 @@ export class CostTracker {
     let cost = 0;
 
     if (options.enableSegmentation) {
-      cost += MODEL_COSTS['sam2-image'];
+      cost += MODEL_COSTS['sam3-image'];
     }
 
     if (options.enableABComparison) {
+      cost += MODEL_COSTS['fashn-v1.5'];
       cost += MODEL_COSTS['fashn-v1.6'];
-      cost += MODEL_COSTS['leffa'];
     } else {
-      cost += MODEL_COSTS['fashn-v1.6'];
+      cost += MODEL_COSTS['fashn-v1.5'];
     }
 
     if (options.enableVideo) {
-      cost += options.videoDuration === 10
-        ? MODEL_COSTS['kling-v2-master-10s']
-        : MODEL_COSTS['kling-v2-master'];
+      cost += MODEL_COSTS['kling-o3-pro'];
     }
 
     return cost;

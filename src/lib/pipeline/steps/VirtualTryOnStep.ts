@@ -1,6 +1,6 @@
 /**
  * Virtual Try-On Step
- * Uses FASHN v1.6 and Leffa models for A/B comparison
+ * Uses FASHN v1.5 (primary) and FASHN v1.6 (secondary) for A/B comparison
  *
  * Features:
  * - Circuit breaker protection
@@ -86,32 +86,52 @@ async function runVTONModel(
     const outputData = (result as Record<string, unknown>).data || result;
     const out = outputData as Record<string, unknown>;
 
+    if (env.enableDebugLogs) {
+      console.log(`[VTON] ${modelId} output keys:`, Object.keys(out));
+    }
+
     // Extract image URL based on model output format
+    // FASHN v1.6 returns: { images: [{ url: "..." }] }
     let imageUrl: string | undefined;
+    const imagesField = out.images as
+      | Array<Record<string, unknown> | string>
+      | undefined;
     const imageField = out.image as
       | Record<string, unknown>
       | string
       | undefined;
     const outputField = out.output as Record<string, unknown> | undefined;
-    const imagesField = out.images as
-      | Array<Record<string, unknown> | string>
-      | undefined;
 
-    if (typeof imageField === "object" && imageField?.url) {
-      imageUrl = imageField.url as string;
-    } else if (outputField?.url) {
-      imageUrl = outputField.url as string;
-    } else if (typeof out.url === "string") {
-      imageUrl = out.url;
-    } else if (typeof imageField === "string") {
-      imageUrl = imageField;
-    } else if (Array.isArray(imagesField) && imagesField.length > 0) {
+    // Priority 1: images array (FASHN v1.6 format)
+    if (Array.isArray(imagesField) && imagesField.length > 0) {
       const first = imagesField[0];
       imageUrl = typeof first === "string" ? first : (first.url as string);
+      console.log(`[VTON] ${modelId} using images[0].url`);
+    }
+    // Priority 2: image object
+    else if (typeof imageField === "object" && imageField?.url) {
+      imageUrl = imageField.url as string;
+      console.log(`[VTON] ${modelId} using image.url`);
+    }
+    // Priority 3: image string
+    else if (typeof imageField === "string") {
+      imageUrl = imageField;
+      console.log(`[VTON] ${modelId} using image string`);
+    }
+    // Priority 4: output field
+    else if (outputField?.url) {
+      imageUrl = outputField.url as string;
+      console.log(`[VTON] ${modelId} using output.url`);
+    }
+    // Priority 5: direct url
+    else if (typeof out.url === "string") {
+      imageUrl = out.url;
+      console.log(`[VTON] ${modelId} using direct url`);
     }
 
     if (!imageUrl) {
-      throw new Error("No image URL in VTON response");
+      console.error(`[VTON] ${modelId} no image URL found. Output:`, out);
+      throw new Error(`No image URL in VTON response. Available keys: ${Object.keys(out).join(', ')}`);
     }
 
     return {
@@ -181,9 +201,9 @@ export async function executeVirtualTryOn(
 
     if (enableAB) {
       // Run both models in parallel
-      console.log("[VTON] Running A/B comparison with FASHN and Leffa");
+      console.log("[VTON] Running A/B comparison with FASHN v1.5 and v1.6");
 
-      const [fashnResult, leffaResult] = await Promise.all([
+      const [fashnv15Result, fashnv16Result] = await Promise.all([
         runVTONModel(primary.id, humanImageUrl, garmentImageUrl, category),
         runVTONModel(secondary.id, humanImageUrl, garmentImageUrl, category),
       ]);
@@ -191,34 +211,34 @@ export async function executeVirtualTryOn(
       const processingTimeMs = Date.now() - startTime;
 
       // Check if at least one succeeded
-      if (!fashnResult.success && !leffaResult.success) {
+      if (!fashnv15Result.success && !fashnv16Result.success) {
         throw new Error(
-          `Both models failed: FASHN: ${fashnResult.error}, Leffa: ${leffaResult.error}`,
+          `Both models failed: FASHN v1.5: ${fashnv15Result.error}, FASHN v1.6: ${fashnv16Result.error}`,
         );
       }
 
       // Build output with variants
       const output: VTONOutput = {
-        resultImageUrl: fashnResult.imageUrl || leffaResult.imageUrl || "",
-        modelUsed: fashnResult.success ? primary.id : secondary.id,
+        resultImageUrl: fashnv15Result.imageUrl || fashnv16Result.imageUrl || "",
+        modelUsed: fashnv15Result.success ? primary.id : secondary.id,
         variants: {},
       };
 
-      if (fashnResult.success && fashnResult.imageUrl) {
-        output.variants!.fashn = {
-          imageUrl: fashnResult.imageUrl,
-          processingTime: fashnResult.processingTimeMs,
+      if (fashnv15Result.success && fashnv15Result.imageUrl) {
+        output.variants!.fashnv15 = {
+          imageUrl: fashnv15Result.imageUrl,
+          processingTime: fashnv15Result.processingTimeMs,
         };
       }
 
-      if (leffaResult.success && leffaResult.imageUrl) {
-        output.variants!.leffa = {
-          imageUrl: leffaResult.imageUrl,
-          processingTime: leffaResult.processingTimeMs,
+      if (fashnv16Result.success && fashnv16Result.imageUrl) {
+        output.variants!.fashnv16 = {
+          imageUrl: fashnv16Result.imageUrl,
+          processingTime: fashnv16Result.processingTimeMs,
         };
       }
 
-      const outputUrls = [fashnResult.imageUrl, leffaResult.imageUrl].filter(
+      const outputUrls = [fashnv15Result.imageUrl, fashnv16Result.imageUrl].filter(
         Boolean,
       ) as string[];
 
@@ -230,12 +250,12 @@ export async function executeVirtualTryOn(
         inputUrls: [humanImageUrl, garmentImageUrl],
         outputUrls,
         metadata: {
-          fashnSuccess: fashnResult.success,
-          fashnTime: fashnResult.processingTimeMs,
-          fashnError: fashnResult.error,
-          leffaSuccess: leffaResult.success,
-          leffaTime: leffaResult.processingTimeMs,
-          leffaError: leffaResult.error,
+          fashnv15Success: fashnv15Result.success,
+          fashnv15Time: fashnv15Result.processingTimeMs,
+          fashnv15Error: fashnv15Result.error,
+          fashnv16Success: fashnv16Result.success,
+          fashnv16Time: fashnv16Result.processingTimeMs,
+          fashnv16Error: fashnv16Result.error,
           category,
         },
         timestamp: new Date(),
@@ -304,11 +324,11 @@ export function getSelectedVTONUrl(
   const output = result.data;
 
   if (selectedVariant && output.variants) {
-    if (selectedVariant === "fashn" && output.variants.fashn) {
-      return output.variants.fashn.imageUrl;
+    if (selectedVariant === "fashnv15" && output.variants.fashnv15) {
+      return output.variants.fashnv15.imageUrl;
     }
-    if (selectedVariant === "leffa" && output.variants.leffa) {
-      return output.variants.leffa.imageUrl;
+    if (selectedVariant === "fashnv16" && output.variants.fashnv16) {
+      return output.variants.fashnv16.imageUrl;
     }
   }
 
