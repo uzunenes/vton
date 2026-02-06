@@ -1,0 +1,53 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isValidImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    
+    function isValidVideo() {
+      return request.resource.contentType.matches('video/.*');
+    }
+    
+    function isValidSize() {
+      return request.resource.size < 50 * 1024 * 1024; // 50MB max
+    }
+    
+    // User uploads
+    match /users/{userId}/uploads/{allPaths=**} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId) && 
+                      (isValidImage() || isValidVideo()) && 
+                      isValidSize();
+      allow delete: if isOwner(userId);
+    }
+    
+    // Session data
+    match /users/{userId}/sessions/{sessionId}/{allPaths=**} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId) && isValidSize();
+      allow delete: if isOwner(userId);
+    }
+    
+    // Public assets (if any)
+    match /public/{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    
+    // Default deny all
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
