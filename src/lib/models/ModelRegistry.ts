@@ -14,8 +14,8 @@ import {
   AnyModelConfig,
   mapCategory,
   GarmentType,
-} from '@/types/models';
-import { GarmentCategory } from '@/types/pipeline';
+} from '../../types/models';
+import { GarmentCategory } from '../../types/pipeline';
 
 export class ModelRegistry {
   private static instance: ModelRegistry;

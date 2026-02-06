@@ -1,39 +1,33 @@
-import type { Metadata, Viewport } from "next";
+import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import ClientProviders from "@/lib/context/ClientProviders";
+import Navbar from "@/components/nav/Navbar";
+import Footer from "@/components/nav/Footer";
+import { config } from "@fortawesome/fontawesome-svg-core";
+import "@fortawesome/fontawesome-svg-core/styles.css";
+config.autoAddCss = false;
 
-const inter = Inter({
-  subsets: ["latin"],
-  display: "swap", // Prevent FOIT (Flash of Invisible Text)
-  variable: "--font-inter",
-});
+const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "VTON - Virtual Try-On",
+  title: "FireSaaS",
   description:
-    "Experience clothing in its natural element. Cinematic runway simulation powered by high-fidelity neural synthesis.",
-  keywords: ["virtual try-on", "fashion", "AI", "clothing", "runway"],
-  authors: [{ name: "VTON" }],
-  creator: "VTON",
+    "FireSaaS helps you build your SaaS faster and easier using NextJS, Firebase and Stripe!",
+  metadataBase: new URL("https://firesaas.dev"),
   openGraph: {
-    title: "VTON - Virtual Try-On",
+    title: "FireSaaS",
     description:
-      "Experience clothing in its natural element. Cinematic runway simulation powered by high-fidelity neural synthesis.",
-    type: "website",
-    locale: "en_US",
+      "FireSaaS helps you build your SaaS faster and easier using NextJS, Firebase and Stripe!",
+    url: "https://firesaas.dev",
+    siteName: "FireSaaS",
   },
-  robots: {
-    index: true,
-    follow: true,
+  twitter: {
+    card: "summary_large_image",
+    title: "FireSaaS",
+    description:
+      "FireSaaS helps you build your SaaS faster and easier using NextJS, Firebase and Stripe!",
   },
-};
-
-export const viewport: Viewport = {
-  width: "device-width",
-  initialScale: 1,
-  maximumScale: 5, // Allow zooming for accessibility
-  themeColor: "#000000",
-  colorScheme: "dark",
 };
 
 export default function RootLayout({
@@ -42,29 +36,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={inter.variable}>
-      <body
-        className={`${inter.className} bg-black text-white antialiased overflow-x-hidden selection:bg-purple-500/30`}
-      >
-        {/* Skip Link for Keyboard Navigation */}
-        <a href="#main-content" className="skip-link">
-          Skip to main content
-        </a>
-
-        {/* Screen Reader Only - Page Title */}
-        <header className="sr-only">
-          <h1>VTON - Virtual Try-On Experience</h1>
-        </header>
-
-        {/* Main Content */}
-        <main id="main-content" role="main">
+    <html lang="en">
+      {/* Change your theme HERE */}
+      <body className={inter.className} data-theme="cupcake">
+        <ClientProviders>
+          <Navbar />
           {children}
-        </main>
-
-        {/* Screen Reader Only - Footer Info */}
-        <footer className="sr-only" role="contentinfo">
-          <p>VTON Virtual Try-On Application</p>
-        </footer>
+          <Footer />
+        </ClientProviders>
       </body>
     </html>
   );

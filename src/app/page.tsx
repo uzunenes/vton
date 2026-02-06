@@ -1,344 +1,19 @@
-"use client";
+import ExplanationSection from "@/components/sections/Explanation";
+import HeroSection from "@/components/sections/HeroSection";
+import StripePricingTable from "@/components/subscription/StripePricingTable";
+import SubscriptionCardContainer from "@/components/subscription/SubscriptionCardContainer";
+import fetchStripeProducts from "@/lib/stripe/fetchStripeProducts";
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import CameraView from "@/components/CameraView";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  Sparkles,
-  Upload,
-  Download,
-  Check,
-  X,
-  Loader2,
-  RotateCcw,
-  Video,
-  Camera,
-  ChevronRight,
-  AlertCircle,
-  Play,
-} from "lucide-react";
-import clsx from "clsx";
-import { usePipeline } from "@/hooks/usePipeline";
-import { PipelineWizard, PipelineStatus } from "@/components/pipeline";
-import { GarmentCategory, ApprovalDecision } from "@/types/pipeline";
-import { getPipelineConfig, env } from "@/lib/config/environment";
-
-// ─── Types ────────────────────────────────────────────────
-
-type VtonCategory = "tops" | "bottoms" | "one-piece" | "accessory";
-
-interface CategoryOption {
-  value: VtonCategory;
-  label: string;
-  emoji: string;
-}
-
-const CATEGORIES: CategoryOption[] = [
-  { value: "tops", label: "Tops", emoji: "👕" },
-  { value: "bottoms", label: "Bottoms", emoji: "👖" },
-  { value: "one-piece", label: "One-Piece", emoji: "👗" },
-  { value: "accessory", label: "Accessory", emoji: "🧢" },
-];
-
-// ─── Flow steps ───────────────────────────────────────────
-
-type FlowStep = "upload" | "camera" | "processing" | "result";
-
-const PIPELINE_CONFIG = getPipelineConfig();
-
-// ─── Component ────────────────────────────────────────────
-
-export default function Home() {
-  // ── Flow ──
-  const [flowStep, setFlowStep] = useState<FlowStep>("upload");
-
-  // ── Garment ──
-  const [garmentPreview, setGarmentPreview] = useState<string | null>(null);
-  const [garmentUploadedUrl, setGarmentUploadedUrl] = useState<string | null>(
-    null,
-  );
-  const [garmentUploading, setGarmentUploading] = useState(false);
-  const [category, setCategory] = useState<VtonCategory>("tops");
-
-  // ── User capture ──
-  const [userImageUrl, setUserImageUrl] = useState<string | null>(null);
-  const [userImagePreview, setUserImagePreview] = useState<string | null>(null);
-  const [garmentLandmarks, setGarmentLandmarks] = useState<
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    any[] | null
-  >(null);
-  const [garmentBlob, setGarmentBlob] = useState<Blob | null>(null);
-
-  // ── Pipeline UI ──
-  const [showPipeline, setShowPipeline] = useState(false);
-  const [selectedVariant, setSelectedVariant] = useState<string | undefined>();
-  const [saving, setSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  // ── Refs ──
-  const garmentInputRef = useRef<HTMLInputElement>(null);
-  const garmentCanvasRef = useRef<HTMLCanvasElement>(null);
-
-  // ── Pipeline hook ──
-  const pipeline = usePipeline({
-    config: PIPELINE_CONFIG,
-    onStepComplete: (stepId, result) => {
-      console.log(`[Step] ${stepId} → ${result.success ? "OK" : "FAIL"}`);
-    },
-    onPipelineComplete: () => {
-      console.log("[Pipeline] Complete ✓");
-      setFlowStep("result");
-    },
-    onError: (error, stepId) => {
-      console.error(`[Pipeline] Error in ${stepId}:`, error.message);
-      setErrorMessage(error.message);
-    },
-  });
-
-  // ── Derived ──
-  const resultImage =
-    pipeline.vtonResults?.resultImageUrl ||
-    pipeline.vtonResults?.variants?.fashn?.imageUrl ||
-    pipeline.vtonResults?.variants?.leffa?.imageUrl ||
-    null;
-
-  const resultVideo = pipeline.videoResult?.videoUrl || null;
-
-  const getDisplayUrl = useCallback((): string | null => {
-    if (!pipeline.vtonResults) return resultImage;
-    if (selectedVariant && pipeline.vtonResults.variants) {
-      if (selectedVariant === "fashn" && pipeline.vtonResults.variants.fashn)
-        return pipeline.vtonResults.variants.fashn.imageUrl;
-      if (selectedVariant === "leffa" && pipeline.vtonResults.variants.leffa)
-        return pipeline.vtonResults.variants.leffa.imageUrl;
-    }
-    return pipeline.vtonResults.resultImageUrl;
-  }, [pipeline.vtonResults, selectedVariant, resultImage]);
-
-  const displayUrl = getDisplayUrl();
-
-  // ─── Garment upload ─────────────────────────────────────
-
-  const handleGarmentSelect = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setErrorMessage(null);
-    setGarmentBlob(file);
-    const previewUrl = URL.createObjectURL(file);
-    setGarmentPreview(previewUrl);
-    setGarmentUploading(true);
-
-    try {
-      const url = await pipeline.uploadImage(file);
-      setGarmentUploadedUrl(url);
-      console.log("[Garment] Uploaded →", url);
-    } catch (err) {
-      console.error("[Garment] Upload failed:", err);
-      setErrorMessage("Garment upload failed. Check your FAL_KEY.");
-    } finally {
-      setGarmentUploading(false);
-    }
-  };
-
-  // ─── Camera capture ─────────────────────────────────────
-
-  const handleCapture = useCallback(
-    async (blob: Blob, _autoStart: boolean = false) => {
-      try {
-        setErrorMessage(null);
-        const localPreview = URL.createObjectURL(blob);
-        setUserImagePreview(localPreview);
-
-        const url = await pipeline.uploadImage(blob);
-        setUserImageUrl(url);
-        console.log("[User] Captured & uploaded →", url);
-      } catch (err) {
-        console.error("[User] Upload failed:", err);
-        setErrorMessage("User image upload failed.");
-      }
-    },
-    [pipeline],
-  );
-
-  const confirmCapture = useCallback(async () => {
-    if (!userImageUrl || !garmentUploadedUrl) return;
-    setFlowStep("processing");
-    setShowPipeline(true);
-
-    await pipeline.start({
-      garmentImageUrl: garmentUploadedUrl,
-      garmentCategory: category as GarmentCategory,
-      userImageUrl: userImageUrl,
-      userPoseLandmarks: garmentLandmarks || undefined,
-    });
-  }, [pipeline, userImageUrl, garmentUploadedUrl, category, garmentLandmarks]);
-
-  // ─── Approval ───────────────────────────────────────────
-
-  const handleApproval = useCallback(
-    async (decision: ApprovalDecision) => {
-      if (decision.selectedVariant) {
-        setSelectedVariant(decision.selectedVariant);
-      }
-      await pipeline.approve(decision);
-    },
-    [pipeline],
-  );
-
-  // ─── Save to disk ──────────────────────────────────────
-
-  const saveResult = useCallback(
-    async (url: string, type: "image" | "video") => {
-      setSaving(true);
-      setSaveSuccess(false);
-      try {
-        const res = await fetch("/api/save-result", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, type }),
-        });
-        if (!res.ok) throw new Error("Save failed");
-        const data = await res.json();
-        console.log("[Saved]", data.path);
-        setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 3000);
-      } catch (err) {
-        console.error("[Save Error]", err);
-        setErrorMessage("Failed to save result to disk.");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [],
-  );
-
-  // ─── Reset ──────────────────────────────────────────────
-
-  const resetAll = useCallback(() => {
-    pipeline.reset();
-    setFlowStep("upload");
-    setGarmentPreview(null);
-    setGarmentUploadedUrl(null);
-    setGarmentBlob(null);
-    setGarmentLandmarks(null);
-    setUserImageUrl(null);
-    setUserImagePreview(null);
-    setSelectedVariant(undefined);
-    setShowPipeline(false);
-    setSaveSuccess(false);
-    setErrorMessage(null);
-    if (garmentInputRef.current) garmentInputRef.current.value = "";
-  }, [pipeline]);
-
-  // ─── Draw garment skeleton ─────────────────────────────
-
-  useEffect(() => {
-    if (!garmentLandmarks || !garmentCanvasRef.current || !garmentBlob) return;
-
-    const canvas = garmentCanvasRef.current;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const img = new Image();
-    img.src = URL.createObjectURL(garmentBlob);
-    img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
-      ctx.lineWidth = 4;
-      ctx.fillStyle = "#ffffff";
-
-      const connections = [
-        [11, 12],
-        [11, 13],
-        [13, 15],
-        [12, 14],
-        [14, 16],
-        [11, 23],
-        [12, 24],
-        [23, 24],
-        [23, 25],
-        [25, 27],
-        [24, 26],
-        [26, 28],
-      ];
-
-      connections.forEach(([a, b]) => {
-        const p1 = garmentLandmarks[a];
-        const p2 = garmentLandmarks[b];
-        if (p1 && p2 && p1.visibility > 0.5 && p2.visibility > 0.5) {
-          ctx.beginPath();
-          ctx.moveTo(p1.x * canvas.width, p1.y * canvas.height);
-          ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height);
-          ctx.stroke();
-        }
-      });
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      garmentLandmarks.forEach((lm: any) => {
-        if (lm.visibility > 0.5) {
-          ctx.beginPath();
-          ctx.arc(lm.x * canvas.width, lm.y * canvas.height, 6, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      });
-      URL.revokeObjectURL(img.src);
-    };
-  }, [garmentLandmarks, garmentBlob]);
-
-  // ─── Cleanup ───────────────────────────────────────────
-
-  useEffect(() => {
-    return () => {
-      if (garmentPreview) URL.revokeObjectURL(garmentPreview);
-      if (userImagePreview) URL.revokeObjectURL(userImagePreview);
-    };
-  }, [garmentPreview, userImagePreview]);
-
-  // ═══════════════════════════════════════════════════════
-  //  RENDER
-  // ═══════════════════════════════════════════════════════
+export default async function Home() {
+  const { products } = await fetchStripeProducts();
 
   return (
-    <main className="min-h-screen bg-background text-foreground flex flex-col items-center">
-      {/* ── Pipeline Full-Screen Overlay ── */}
-      <AnimatePresence>
-        {showPipeline && pipeline.state && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-background/95 backdrop-blur-xl overflow-auto"
-          >
-            <button
-              onClick={() => setShowPipeline(false)}
-              className="absolute top-6 right-6 p-3 rounded-full bg-white/5 hover:bg-white/10 transition-colors z-10"
-              aria-label="Close"
-            >
-              <X className="w-5 h-5" />
-            </button>
+    <main className="flex min-h-screen flex-col space-y-10 pb-10 items-center justify-between lg:p-4">
+      <HeroSection />
 
-            <PipelineWizard
-              state={pipeline.state}
-              currentResult={pipeline.currentResult}
-              onApprove={handleApproval}
-              onRetry={() => pipeline.retry()}
-              onCancel={() => {
-                pipeline.cancel();
-                setShowPipeline(false);
-                setFlowStep("upload");
-              }}
-              progress={pipeline.progress}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ExplanationSection />
 
+<<<<<<< Updated upstream
       {/* ── Floating Status Bar ── */}
       <AnimatePresence>
         {pipeline.state &&
@@ -1005,47 +680,23 @@ export default function Home() {
           />
         </div>
       </footer>
+=======
+      {products.length > 0 ? (
+        <SubscriptionCardContainer
+          products={products}
+          salesCall="Save money and time, buy my SaaS app today and you won't regret it!"
+        />
+      ) : (
+        <p>No subscription plans available at the moment.</p>
+      )}
+
+      {/*
+      This is an example of how to use the StripePricingTable component. Incase you don't want to build your own.
+      <StripePricingTable
+        pricingTableId="prctbl_1OgCflCLPADkTljcIdzPukni"
+        publishableKey="pk_test_51NyS5wCLPADkTljcNsxH5B71sfFMfC1t47MFQv3JAcFWnV0yVBcfV6hvhR18igcbz1Y0IG79EtCA3vXoZ9Vjax6W008Q95NrMj"
+      />*/}
+>>>>>>> Stashed changes
     </main>
-  );
-}
-
-// ─── Sub-components ──────────────────────────────────────
-
-function Brackets() {
-  return (
-    <>
-      <div className="absolute top-4 left-4 w-6 h-6 border-t-2 border-l-2 border-white/20 pointer-events-none" />
-      <div className="absolute top-4 right-4 w-6 h-6 border-t-2 border-r-2 border-white/20 pointer-events-none" />
-      <div className="absolute bottom-4 left-4 w-6 h-6 border-b-2 border-l-2 border-white/20 pointer-events-none" />
-      <div className="absolute bottom-4 right-4 w-6 h-6 border-b-2 border-r-2 border-white/20 pointer-events-none" />
-    </>
-  );
-}
-
-function StatusDot({
-  active,
-  pulse,
-  label,
-}: {
-  active: boolean;
-  pulse?: boolean;
-  label: string;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <div
-        className={clsx(
-          "w-1.5 h-1.5 rounded-full transition-colors",
-          active
-            ? pulse
-              ? "bg-blue-500 animate-pulse"
-              : "bg-green-500"
-            : "bg-white/20",
-        )}
-      />
-      <span className="uppercase tracking-widest text-[10px] font-bold text-white/30">
-        {label}
-      </span>
-    </div>
   );
 }

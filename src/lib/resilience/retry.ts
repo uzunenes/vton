@@ -12,7 +12,7 @@
  *   const result = await withRetry(() => apiCall(), { maxRetries: 3 });
  */
 
-import { FalApiError, TimeoutError, NetworkError } from '@/lib/api/FalClient';
+import { FalApiError, TimeoutError, NetworkError } from '../api/FalClient';
 import { CircuitOpenError } from './CircuitBreaker';
 
 export interface RetryConfig {
