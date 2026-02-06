@@ -1,91 +1,240 @@
 @import "tailwindcss";
 
 :root {
-  --background: #000000;
-  --foreground: #f5f5f7;
-  --primary: #ffffff;
-  --secondary: #1d1d1f;
-  --accent: #0071e3;
-  --glass: rgba(22, 22, 23, 0.8);
+    --background: #000000;
+    --foreground: #f5f5f7;
+    --primary: #ffffff;
+    --secondary: #1d1d1f;
+    --accent: #0071e3;
+    --glass: rgba(22, 22, 23, 0.8);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-primary: var(--primary);
-  --color-secondary: var(--secondary);
-  --color-accent: var(--accent);
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-primary: var(--primary);
+    --color-secondary: var(--secondary);
+    --color-accent: var(--accent);
+    --font-sans:
+        "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        sans-serif;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  overflow-x: hidden;
-  -webkit-font-smoothing: antialiased;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
 }
 
 /* Apple Style Typography */
 h1,
 h2,
 h3 {
-  letter-spacing: -0.02em;
+    letter-spacing: -0.02em;
 }
 
 /* Premium Surface */
 .apple-surface {
-  background: var(--secondary);
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--secondary);
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .apple-glass {
-  background: var(--glass);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
+    background: var(--glass);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
 /* Clean Button */
 .apple-button {
-  @apply px-6 py-3 rounded-full font-semibold transition-all duration-300;
-  background: var(--foreground);
-  color: var(--background);
+    @apply px-6 py-3 rounded-full font-semibold transition-all duration-300;
+    background: var(--foreground);
+    color: var(--background);
 }
 
 .apple-button:hover {
-  @apply scale-[1.02] opacity-90;
+    @apply scale-[1.02] opacity-90;
 }
 
 .apple-button:active {
-  @apply scale-[0.98];
+    @apply scale-[0.98];
 }
 
 /* Dark Matrix (Subtle) */
 .matrix-column {
-  position: absolute;
-  top: -100px;
-  width: 20px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: bold;
-  writing-mode: vertical-rl;
-  text-orientation: upright;
-  color: #ffffff;
-  opacity: 0.1;
-  animation: matrix-fall linear infinite;
+    position: absolute;
+    top: -100px;
+    width: 20px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: bold;
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    color: #ffffff;
+    opacity: 0.1;
+    animation: matrix-fall linear infinite;
 }
 
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
+    width: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--background);
+    background: var(--background);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 10px;
+    background: #333;
+    border-radius: 10px;
+}
+
+/* ============================================
+   ACCESSIBILITY UTILITIES
+   ============================================ */
+
+/* Screen Reader Only */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Focus visible for keyboard navigation */
+.focus-visible-ring {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black;
+}
+
+/* Skip link styling */
+.skip-link {
+    @apply sr-only;
+}
+
+.skip-link:focus {
+    @apply not-sr-only absolute top-4 left-4 z-[100] px-4 py-2 bg-white text-black rounded-lg font-semibold;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* ============================================
+   RESPONSIVE UTILITIES
+   ============================================ */
+
+/* Mobile-first container */
+.container-mobile {
+    @apply w-full px-4 sm:px-6 lg:px-8;
+}
+
+/* Touch-friendly target size (44x44px minimum - Apple HIG) */
+.touch-target {
+    min-height: 44px;
+    min-width: 44px;
+}
+
+/* Safe area insets for iOS devices */
+.safe-area-inset {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+    padding-left: env(safe-area-inset-left, 0);
+    padding-right: env(safe-area-inset-right, 0);
+}
+
+.safe-area-top {
+    padding-top: env(safe-area-inset-top, 0);
+}
+
+/* Prevent text selection on interactive elements */
+.no-select {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/* ============================================
+   ANIMATION UTILITIES
+   ============================================ */
+
+/* Subtle pulse for status indicators */
+@keyframes subtle-pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.animate-subtle-pulse {
+    animation: subtle-pulse 2s ease-in-out infinite;
+}
+
+/* Fade in animation */
+@keyframes fade-in {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+.animate-fade-in {
+    animation: fade-in 0.3s ease-out;
+}
+
+/* Slide up animation */
+@keyframes slide-up {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-slide-up {
+    animation: slide-up 0.3s ease-out;
+}
+
+/* ============================================
+   COMPONENT UTILITIES
+   ============================================ */
+
+/* Glass card variant */
+.glass-card {
+    @apply rounded-2xl border border-white/10;
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(10px);
+}
+
+/* Gradient text */
+.gradient-text {
+    background: linear-gradient(135deg, #fff 0%, #888 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Image loading placeholder */
+.image-placeholder {
+    @apply bg-white/5 animate-pulse;
 }

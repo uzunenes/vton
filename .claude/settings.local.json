@@ -8,7 +8,10 @@
       "Bash(npm run dev:*)",
       "Bash(taskkill:*)",
       "Bash(tasklist:*)",
-      "Bash(ls -la \"C:\\\\Users\\\\euzun17\\\\.claude-worktrees\\\\antigravity-vton\\\\cool-visvesvaraya\\\\.env\"*)"
+      "Bash(ls -la \"C:\\\\Users\\\\euzun17\\\\.claude-worktrees\\\\antigravity-vton\\\\cool-visvesvaraya\\\\.env\"*)",
+      "mcp__acp__Bash",
+      "mcp__acp__Write",
+      "mcp__acp__Edit"
     ]
   }
 }

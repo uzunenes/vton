@@ -1,33 +1,72 @@
 /**
  * usePipeline Hook
  * React hook for managing pipeline state and execution
+ *
+ * Fixed: deep-clone state on every publish to prevent shallow-copy mutation bugs.
+ * Fixed: running state tracked via ref so approve() always sees latest.
+ * Fixed: `state` removed from start() deps to prevent mid-run invalidation.
  */
 
-'use client';
+"use client";
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect } from "react";
 import {
   PipelineState,
   PipelineStatus,
   PipelineInputs,
   ApprovalDecision,
   StepResult,
-  GarmentCategory,
+  StepStatus,
+  PipelineStepState,
   VTONOutput,
   VideoOutput,
-  SegmentationOutput,
-} from '@/types/pipeline';
+} from "@/types/pipeline";
 import {
   PipelineOrchestrator,
   PipelineConfig,
   createPipeline,
   PIPELINE_STEPS,
-} from '@/lib/pipeline/PipelineOrchestrator';
-import { createSessionLogger, SessionLogger } from '@/lib/logging/SessionLogger';
-import { createOutputManager, OutputManager } from '@/lib/logging/OutputManager';
-import { fal } from '@/lib/fal';
-import { modelRegistry } from '@/lib/models/ModelRegistry';
-import { mapCategory } from '@/types/models';
+  StepDefinition,
+} from "@/lib/pipeline/PipelineOrchestrator";
+import {
+  createSessionLogger,
+  SessionLogger,
+} from "@/lib/logging/SessionLogger";
+import {
+  createOutputManager,
+  OutputManager,
+} from "@/lib/logging/OutputManager";
+import { fal } from "@/lib/fal";
+
+// ─────────────────────────────────────────────
+//  Deep-clone helpers – the single source of
+//  truth for producing an immutable snapshot
+// ─────────────────────────────────────────────
+
+function cloneStep(s: PipelineStepState): PipelineStepState {
+  return {
+    ...s,
+    result: s.result ? { ...s.result } : undefined,
+    startedAt: s.startedAt ? new Date(s.startedAt.getTime()) : undefined,
+    completedAt: s.completedAt ? new Date(s.completedAt.getTime()) : undefined,
+    approvedAt: s.approvedAt ? new Date(s.approvedAt.getTime()) : undefined,
+    rejectedAt: s.rejectedAt ? new Date(s.rejectedAt.getTime()) : undefined,
+  };
+}
+
+function cloneState(s: PipelineState): PipelineState {
+  return {
+    ...s,
+    steps: s.steps.map(cloneStep),
+    startedAt: new Date(s.startedAt.getTime()),
+    completedAt: s.completedAt ? new Date(s.completedAt.getTime()) : undefined,
+    inputs: { ...s.inputs },
+  };
+}
+
+// ─────────────────────────────────────────────
+//  Types
+// ─────────────────────────────────────────────
 
 export interface UsePipelineOptions {
   config?: Partial<PipelineConfig>;
@@ -64,423 +103,497 @@ export interface UsePipelineReturn {
   outputManager: OutputManager | null;
 }
 
-export function usePipeline(options: UsePipelineOptions = {}): UsePipelineReturn {
+// ─────────────────────────────────────────────
+//  Helper: get active steps from config
+// ─────────────────────────────────────────────
+
+function getActiveSteps(pipelineConfig: PipelineConfig): StepDefinition[] {
+  return PIPELINE_STEPS.filter((step) => {
+    if (step.id === "segmentation" && !pipelineConfig.enableSegmentation)
+      return false;
+    if (step.id === "face-restoration") return false;
+    if (step.id === "video-generation" && !pipelineConfig.enableVideo)
+      return false;
+    return true;
+  });
+}
+
+// ─────────────────────────────────────────────
+//  Hook
+// ─────────────────────────────────────────────
+
+export function usePipeline(
+  options: UsePipelineOptions = {},
+): UsePipelineReturn {
   const { config, onStepComplete, onPipelineComplete, onError } = options;
 
-  // State
+  // ── React state (immutable snapshots) ──
   const [state, setState] = useState<PipelineState | null>(null);
   const [currentResult, setCurrentResult] = useState<StepResult | null>(null);
   const [vtonResults, setVtonResults] = useState<VTONOutput | null>(null);
   const [videoResult, setVideoResult] = useState<VideoOutput | null>(null);
 
-  // Refs for orchestrator and utilities
+  // ── Mutable refs that survive across renders ──
   const orchestratorRef = useRef<PipelineOrchestrator | null>(null);
   const loggerRef = useRef<SessionLogger | null>(null);
   const outputManagerRef = useRef<OutputManager | null>(null);
 
-  // Derived state
-  const isRunning = state?.status === 'running';
-  const isAwaitingApproval = state?.status === 'awaiting_approval';
-  const isComplete = state?.status === 'completed';
-  const isFailed = state?.status === 'failed';
-  const currentStepId = state?.currentStepIndex !== undefined && state.currentStepIndex >= 0
-    ? state.steps[state.currentStepIndex]?.stepId || null
-    : null;
-  const progress = state ? Math.round((state.steps.filter(s => s.status === 'completed').length / state.steps.length) * 100) : 0;
+  // The *mutable* running state.  We mutate this freely inside start/approve,
+  // then call publishState() to push an immutable deep-clone into React state.
+  const runStateRef = useRef<PipelineState | null>(null);
 
-  // Upload image to fal storage
-  const uploadImage = useCallback(async (blob: Blob): Promise<string> => {
-    const url = await fal.storage.upload(blob);
-    return url;
+  // Previous results accumulated across steps (survives approve boundaries)
+  const previousResultsRef = useRef<Record<string, StepResult | undefined>>({});
+
+  // Pipeline config resolved once at start, stored in ref for approve()
+  const pipelineConfigRef = useRef<PipelineConfig | null>(null);
+
+  // Active steps for current run
+  const activeStepsRef = useRef<StepDefinition[]>([]);
+
+  // ── Derived convenience booleans ──
+  const isRunning = state?.status === "running";
+  const isAwaitingApproval = state?.status === "awaiting_approval";
+  const isComplete = state?.status === "completed";
+  const isFailed = state?.status === "failed";
+
+  const currentStepId =
+    state &&
+    state.currentStepIndex >= 0 &&
+    state.currentStepIndex < state.steps.length
+      ? (state.steps[state.currentStepIndex]?.stepId ?? null)
+      : null;
+
+  const progress = state
+    ? Math.round(
+        (state.steps.filter((s) => s.status === "completed").length /
+          state.steps.length) *
+          100,
+      )
+    : 0;
+
+  // ── Publish: push immutable snapshot of runStateRef into React ──
+  const publishState = useCallback(() => {
+    const rs = runStateRef.current;
+    if (rs) {
+      setState(cloneState(rs));
+    }
   }, []);
 
-  // Execute a single step
-  const executeStep = useCallback(async (
-    stepId: string,
-    inputs: PipelineInputs,
-    previousResults: Record<string, StepResult | undefined>,
-    pipelineConfig: PipelineConfig
-  ): Promise<StepResult> => {
-    const logger = loggerRef.current;
-    const outputManager = outputManagerRef.current;
+  // ── Upload helper ──
+  const uploadImage = useCallback(
+    async (blob: Blob): Promise<string> => {
+      if (config?.useMock) {
+        console.log("[Mock] Skipping real upload, returning local URL");
+        return URL.createObjectURL(blob);
+      }
+      const url = await fal.storage.upload(blob);
+      return url;
+    },
+    [config?.useMock],
+  );
 
-    const stepDef = PIPELINE_STEPS.find(s => s.id === stepId);
-    if (!stepDef) {
-      throw new Error(`Unknown step: ${stepId}`);
-    }
+  // ── Execute a single step ──
+  const executeStep = useCallback(
+    async (
+      stepId: string,
+      inputs: PipelineInputs,
+      previousResults: Record<string, StepResult | undefined>,
+      pipelineConfig: PipelineConfig,
+    ): Promise<StepResult> => {
+      const logger = loggerRef.current;
+      const outputManager = outputManagerRef.current;
 
-    logger?.stepStarted(stepId, stepDef.name);
-    const startTime = Date.now();
-
-    try {
-      let result: StepResult;
-
-      switch (stepId) {
-        case 'segmentation': {
-          // Import and execute segmentation
-          const { executeGarmentSegmentation } = await import('@/lib/pipeline/steps/GarmentSegmentationStep');
-          result = await executeGarmentSegmentation({
-            stepId,
-            inputs,
-            previousResults,
-            config: pipelineConfig,
-          });
-          break;
-        }
-
-        case 'pose-detection': {
-          // Pose detection is handled by MediaPipe in CameraView
-          // This step just validates that we have pose data
-          result = {
-            success: !!inputs.userPoseLandmarks && inputs.userPoseLandmarks.length > 0,
-            data: {
-              landmarks: inputs.userPoseLandmarks || [],
-              isValid: true,
-              matchScore: 1,
-              capturedImageUrl: inputs.userImageUrl || '',
-            },
-            processingTimeMs: Date.now() - startTime,
-            modelUsed: 'mediapipe',
-            inputUrls: [inputs.userImageUrl || ''],
-            outputUrls: [inputs.userImageUrl || ''],
-            metadata: {},
-            timestamp: new Date(),
-          };
-          break;
-        }
-
-        case 'virtual-tryon': {
-          const { executeVirtualTryOn } = await import('@/lib/pipeline/steps/VirtualTryOnStep');
-          result = await executeVirtualTryOn({
-            stepId,
-            inputs,
-            previousResults,
-            config: pipelineConfig,
-          });
-
-          if (result.success && result.data) {
-            setVtonResults(result.data as VTONOutput);
-          }
-          break;
-        }
-
-        case 'face-restoration': {
-          // Face restoration is optional - pass through the VTON result
-          const vtonResult = previousResults['virtual-tryon'];
-          result = {
-            success: true,
-            data: vtonResult?.data,
-            processingTimeMs: Date.now() - startTime,
-            modelUsed: 'passthrough',
-            inputUrls: vtonResult?.outputUrls || [],
-            outputUrls: vtonResult?.outputUrls || [],
-            metadata: { skipped: !pipelineConfig.enableFaceRestoration },
-            timestamp: new Date(),
-          };
-          break;
-        }
-
-        case 'video-generation': {
-          const { executeVideoGeneration } = await import('@/lib/pipeline/steps/VideoGenerationStep');
-          result = await executeVideoGeneration({
-            stepId,
-            inputs,
-            previousResults,
-            config: pipelineConfig,
-          });
-
-          if (result.success && result.data) {
-            setVideoResult(result.data as VideoOutput);
-          }
-          break;
-        }
-
-        default:
-          throw new Error(`No executor for step: ${stepId}`);
+      const stepDef = PIPELINE_STEPS.find((s) => s.id === stepId);
+      if (!stepDef) {
+        throw new Error(`Unknown step: ${stepId}`);
       }
 
-      logger?.stepCompleted(stepId, stepDef.name, result.processingTimeMs);
-
-      // Save outputs
-      if (result.success && result.outputUrls?.length > 0 && outputManager) {
-        for (const url of result.outputUrls) {
-          const type = stepId === 'video-generation' ? 'video' : 'image';
-          await outputManager.saveOutput({
-            stepId,
-            url,
-            type,
-            modelUsed: result.modelUsed,
-            metadata: {
-              processingTimeMs: result.processingTimeMs,
-              modelParams: result.metadata,
-            },
-          });
-        }
-      }
-
-      onStepComplete?.(stepId, result);
-      return result;
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      logger?.stepFailed(stepId, stepDef.name, errorMsg);
-      onError?.(error instanceof Error ? error : new Error(errorMsg), stepId);
-      throw error;
-    }
-  }, [onStepComplete, onError]);
-
-  // Start the pipeline
-  const start = useCallback(async (inputs: PipelineInputs) => {
-    // Prevent starting if already running
-    if (state && (state.status === 'running' || state.status === 'awaiting_approval')) {
-      console.warn('[Pipeline] Pipeline already running');
-      return;
-    }
-
-    // Create new orchestrator and utilities
-    const orchestrator = createPipeline(config);
-    orchestratorRef.current = orchestrator;
-
-    const sessionId = orchestrator.getSessionId();
-    const logger = createSessionLogger(sessionId);
-    const outputManager = createOutputManager(sessionId);
-
-    loggerRef.current = logger;
-    outputManagerRef.current = outputManager;
-
-    logger.pipelineStarted(inputs.garmentCategory);
-
-    // Set up event handlers
-    orchestrator.on('step_started', (event) => {
-      setState(orchestrator.getState());
-      setCurrentResult(null);
-    });
-
-    orchestrator.on('step_completed', (event) => {
-      setState(orchestrator.getState());
-      if (event.data) {
-        setCurrentResult(event.data as StepResult);
-      }
-    });
-
-    orchestrator.on('awaiting_approval', (event) => {
-      setState(orchestrator.getState());
-      if (event.data) {
-        setCurrentResult(event.data as StepResult);
-      }
-    });
-
-    orchestrator.on('pipeline_completed', () => {
-      const finalState = orchestrator.getState();
-      setState(finalState);
-      const totalTime = finalState.completedAt
-        ? finalState.completedAt.getTime() - finalState.startedAt.getTime()
-        : 0;
-      logger.pipelineCompleted(totalTime);
-      onPipelineComplete?.(finalState);
-    });
-
-    orchestrator.on('pipeline_failed', (event) => {
-      setState(orchestrator.getState());
-      const errorMsg = event.data instanceof Error ? event.data.message : 'Pipeline failed';
-      logger.pipelineFailed(errorMsg);
-    });
-
-    // Register step executors
-    const pipelineConfig = { ...orchestrator['config'] } as PipelineConfig;
-    const previousResults: Record<string, StepResult | undefined> = {};
-
-    // Custom start that executes steps one by one
-    orchestrator.setInputs(inputs);
-
-    const activeSteps = PIPELINE_STEPS.filter(step => {
-      if (step.id === 'segmentation' && !pipelineConfig.enableSegmentation) return false;
-      if (step.id === 'face-restoration' && !pipelineConfig.enableFaceRestoration) return false;
-      if (step.id === 'video-generation' && !pipelineConfig.enableVideo) return false;
-      return true;
-    });
-
-    // Initialize state
-    const initialState: PipelineState = {
-      sessionId,
-      currentStepIndex: 0,
-      steps: activeSteps.map(step => ({
-        stepId: step.id,
-        status: 'pending',
-        attempts: 0,
-      })),
-      startedAt: new Date(),
-      status: 'running',
-      inputs,
-    };
-    setState(initialState);
-
-    // Execute steps
-    for (let i = 0; i < activeSteps.length; i++) {
-      const step = activeSteps[i];
-      const currentState = { ...initialState, currentStepIndex: i };
-      currentState.steps[i].status = 'running';
-      currentState.steps[i].startedAt = new Date();
-      setState({ ...currentState });
+      logger?.stepStarted(stepId, stepDef.name);
+      const startTime = Date.now();
 
       try {
-        const result = await executeStep(step.id, inputs, previousResults, pipelineConfig);
-        previousResults[step.id] = result;
+        let result: StepResult;
 
-        currentState.steps[i].result = result;
-        currentState.steps[i].completedAt = new Date();
+        switch (stepId) {
+          case "segmentation": {
+            const { executeGarmentSegmentation } =
+              await import("@/lib/pipeline/steps/GarmentSegmentationStep");
+            result = await executeGarmentSegmentation({
+              stepId,
+              inputs,
+              previousResults,
+              config: pipelineConfig,
+            });
+            break;
+          }
 
-        if (!result.success) {
-          currentState.steps[i].status = 'failed';
-          currentState.status = 'failed';
-          setState({ ...currentState });
-          return;
+          case "pose-detection": {
+            result = {
+              success:
+                !!inputs.userPoseLandmarks &&
+                inputs.userPoseLandmarks.length > 0,
+              data: {
+                landmarks: inputs.userPoseLandmarks || [],
+                isValid: true,
+                matchScore: 1,
+                capturedImageUrl: inputs.userImageUrl || "",
+              },
+              processingTimeMs: Date.now() - startTime,
+              modelUsed: "mediapipe",
+              inputUrls: [inputs.userImageUrl || ""],
+              outputUrls: [inputs.userImageUrl || ""],
+              metadata: {},
+              timestamp: new Date(),
+            };
+            break;
+          }
+
+          case "virtual-tryon": {
+            const { executeVirtualTryOn } =
+              await import("@/lib/pipeline/steps/VirtualTryOnStep");
+            result = await executeVirtualTryOn({
+              stepId,
+              inputs,
+              previousResults,
+              config: pipelineConfig,
+            });
+            if (result.success && result.data) {
+              setVtonResults(result.data as VTONOutput);
+            }
+            break;
+          }
+
+          case "face-restoration": {
+            const vtonResult = previousResults["virtual-tryon"];
+            result = {
+              success: true,
+              data: vtonResult?.data,
+              processingTimeMs: Date.now() - startTime,
+              modelUsed: "passthrough",
+              inputUrls: vtonResult?.outputUrls || [],
+              outputUrls: vtonResult?.outputUrls || [],
+              metadata: { skipped: true },
+              timestamp: new Date(),
+            };
+            break;
+          }
+
+          case "video-generation": {
+            const { executeVideoGeneration } =
+              await import("@/lib/pipeline/steps/VideoGenerationStep");
+            result = await executeVideoGeneration({
+              stepId,
+              inputs,
+              previousResults,
+              config: pipelineConfig,
+            });
+            if (result.success && result.data) {
+              setVideoResult(result.data as VideoOutput);
+            }
+            break;
+          }
+
+          default:
+            throw new Error(`No executor for step: ${stepId}`);
         }
 
-        // Check if approval is required
-        if (step.requiresApproval && !step.autoApprove) {
-          currentState.steps[i].status = 'awaiting_approval';
-          currentState.status = 'awaiting_approval';
-          setState({ ...currentState });
-          setCurrentResult(result);
+        logger?.stepCompleted(stepId, stepDef.name, result.processingTimeMs);
 
-          // Wait for approval (will be handled by approve function)
-          return;
+        // Persist outputs to disk
+        if (result.success && result.outputUrls?.length > 0 && outputManager) {
+          for (const url of result.outputUrls) {
+            try {
+              const type =
+                stepId === "video-generation"
+                  ? ("video" as const)
+                  : ("image" as const);
+              await outputManager.saveOutput({
+                stepId,
+                url,
+                type,
+                modelUsed: result.modelUsed,
+                metadata: {
+                  processingTimeMs: result.processingTimeMs,
+                  modelParams: result.metadata,
+                },
+              });
+            } catch (saveErr) {
+              console.warn("[Pipeline] Failed to save output:", saveErr);
+            }
+          }
         }
 
-        currentState.steps[i].status = 'completed';
-        currentState.steps[i].approvedAt = new Date();
-        setState({ ...currentState });
+        onStepComplete?.(stepId, result);
+        return result;
       } catch (error) {
-        currentState.steps[i].status = 'failed';
-        currentState.status = 'failed';
-        setState({ ...currentState });
-        return;
+        const errorMsg =
+          error instanceof Error ? error.message : "Unknown error";
+        logger?.stepFailed(stepId, stepDef.name, errorMsg);
+        onError?.(error instanceof Error ? error : new Error(errorMsg), stepId);
+        throw error;
       }
-    }
+    },
+    [onStepComplete, onError],
+  );
 
-    // All steps completed
-    initialState.status = 'completed';
-    initialState.completedAt = new Date();
-    setState({ ...initialState });
-  }, [config, executeStep, onPipelineComplete, state]);
+  // ─────────────────────────────────────────
+  //  runSteps: shared step-execution loop
+  //  used by both start() and approve()
+  // ─────────────────────────────────────────
 
-  // Approve current step
-  const approve = useCallback(async (decision: ApprovalDecision) => {
-    if (!state || state.status !== 'awaiting_approval') {
-      throw new Error('No step awaiting approval');
-    }
+  const runSteps = useCallback(
+    async (fromIndex: number, inputs: PipelineInputs): Promise<void> => {
+      const rs = runStateRef.current;
+      const activeSteps = activeStepsRef.current;
+      const pipelineConfig = pipelineConfigRef.current;
+      const previousResults = previousResultsRef.current;
 
-    const logger = loggerRef.current;
-    const currentStepIndex = state.currentStepIndex;
-    const currentStep = state.steps[currentStepIndex];
+      if (!rs || !pipelineConfig) return;
 
-    logger?.approvalEvent(currentStep.stepId, decision.approved, decision.selectedVariant);
-
-    if (decision.approved) {
-      // Mark current step as completed
-      const newState = { ...state };
-      newState.steps[currentStepIndex].status = 'completed';
-      newState.steps[currentStepIndex].approvedAt = new Date();
-      newState.steps[currentStepIndex].selectedVariant = decision.selectedVariant;
-
-      // Continue with remaining steps
-      const activeSteps = PIPELINE_STEPS.filter(step => {
-        const pipelineConfig = orchestratorRef.current?.['config'] as PipelineConfig;
-        if (step.id === 'segmentation' && !pipelineConfig?.enableSegmentation) return false;
-        if (step.id === 'face-restoration' && !pipelineConfig?.enableFaceRestoration) return false;
-        if (step.id === 'video-generation' && !pipelineConfig?.enableVideo) return false;
-        return true;
-      });
-
-      const previousResults: Record<string, StepResult | undefined> = {};
-      for (let i = 0; i <= currentStepIndex; i++) {
-        previousResults[newState.steps[i].stepId] = newState.steps[i].result;
-      }
-
-      // Continue from next step
-      newState.status = 'running';
-      setState(newState);
-
-      for (let i = currentStepIndex + 1; i < activeSteps.length; i++) {
+      for (let i = fromIndex; i < activeSteps.length; i++) {
         const step = activeSteps[i];
-        const stepState = newState.steps[i];
 
-        stepState.status = 'running';
-        stepState.startedAt = new Date();
-        newState.currentStepIndex = i;
-        setState({ ...newState });
+        // Update running state
+        rs.currentStepIndex = i;
+        rs.status = "running";
+        rs.steps[i].status = "running" as StepStatus;
+        rs.steps[i].startedAt = new Date();
+        rs.steps[i].attempts = (rs.steps[i].attempts || 0) + 1;
+        publishState();
+        setCurrentResult(null);
 
         try {
-          const pipelineConfig = orchestratorRef.current?.['config'] as PipelineConfig;
           const result = await executeStep(
             step.id,
-            state.inputs,
+            inputs,
             previousResults,
-            pipelineConfig
+            pipelineConfig,
           );
           previousResults[step.id] = result;
-          stepState.result = result;
-          stepState.completedAt = new Date();
+
+          rs.steps[i].result = result;
+          rs.steps[i].completedAt = new Date();
 
           if (!result.success) {
-            stepState.status = 'failed';
-            newState.status = 'failed';
-            setState({ ...newState });
+            rs.steps[i].status = "failed" as StepStatus;
+            rs.status = "failed";
+            publishState();
             return;
           }
 
+          // Approval gate
           if (step.requiresApproval && !step.autoApprove) {
-            stepState.status = 'awaiting_approval';
-            newState.status = 'awaiting_approval';
-            setState({ ...newState });
+            rs.steps[i].status = "awaiting_approval" as StepStatus;
+            rs.status = "awaiting_approval";
+            publishState();
             setCurrentResult(result);
+            // Execution pauses here. approve() will call runSteps(i+1, …)
             return;
           }
 
-          stepState.status = 'completed';
-          stepState.approvedAt = new Date();
-          setState({ ...newState });
-        } catch (error) {
-          stepState.status = 'failed';
-          newState.status = 'failed';
-          setState({ ...newState });
+          // Auto-approved
+          rs.steps[i].status = "completed" as StepStatus;
+          rs.steps[i].approvedAt = new Date();
+          publishState();
+        } catch (_err) {
+          rs.steps[i].status = "failed" as StepStatus;
+          rs.status = "failed";
+          publishState();
           return;
         }
       }
 
-      // All done
-      newState.status = 'completed';
-      newState.completedAt = new Date();
-      setState({ ...newState });
-    } else if (decision.regenerate) {
-      // Retry the step
-      // TODO: Implement regeneration logic
-    }
-  }, [state, executeStep]);
+      // All steps completed successfully
+      rs.status = "completed";
+      rs.completedAt = new Date();
+      publishState();
 
-  // Retry current step
-  const retry = useCallback(async (modelId?: string) => {
-    // TODO: Implement retry logic
-  }, []);
+      const logger = loggerRef.current;
+      if (logger && rs.completedAt) {
+        const totalTime = rs.completedAt.getTime() - rs.startedAt.getTime();
+        logger.pipelineCompleted(totalTime);
+      }
+      onPipelineComplete?.(cloneState(rs));
+    },
+    [executeStep, publishState, onPipelineComplete],
+  );
 
-  // Cancel pipeline
+  // ─────────────────────────────────────────
+  //  start()
+  // ─────────────────────────────────────────
+
+  const start = useCallback(
+    async (inputs: PipelineInputs) => {
+      // Guard against double-start
+      const current = runStateRef.current;
+      if (
+        current &&
+        (current.status === "running" || current.status === "awaiting_approval")
+      ) {
+        console.warn("[Pipeline] Already running, ignoring start()");
+        return;
+      }
+
+      // Reset result state
+      setVtonResults(null);
+      setVideoResult(null);
+      setCurrentResult(null);
+
+      // Create orchestrator, logger, output manager
+      const orchestrator = createPipeline(config);
+      orchestratorRef.current = orchestrator;
+
+      const sessionId = orchestrator.getSessionId();
+      const logger = createSessionLogger(sessionId);
+      const outputManager = createOutputManager(sessionId);
+      loggerRef.current = logger;
+      outputManagerRef.current = outputManager;
+
+      logger.pipelineStarted(inputs.garmentCategory);
+
+      // Resolve pipeline config
+      const pipelineConfig = {
+        ...(orchestrator as unknown as { config: PipelineConfig }).config,
+      } as PipelineConfig;
+      pipelineConfigRef.current = pipelineConfig;
+
+      // Build active steps
+      const activeSteps = getActiveSteps(pipelineConfig);
+      activeStepsRef.current = activeSteps;
+
+      // Reset previous results
+      previousResultsRef.current = {};
+
+      // Build initial mutable state
+      const runState: PipelineState = {
+        sessionId,
+        currentStepIndex: 0,
+        steps: activeSteps.map((step) => ({
+          stepId: step.id,
+          status: "pending" as StepStatus,
+          attempts: 0,
+        })),
+        startedAt: new Date(),
+        status: "running",
+        inputs,
+      };
+      runStateRef.current = runState;
+      publishState();
+
+      // Begin execution
+      await runSteps(0, inputs);
+    },
+    [config, publishState, runSteps],
+  );
+
+  // ─────────────────────────────────────────
+  //  approve()
+  // ─────────────────────────────────────────
+
+  const approve = useCallback(
+    async (decision: ApprovalDecision) => {
+      const rs = runStateRef.current;
+      if (!rs || rs.status !== "awaiting_approval") {
+        throw new Error("No step awaiting approval");
+      }
+
+      const logger = loggerRef.current;
+      const idx = rs.currentStepIndex;
+      const currentStep = rs.steps[idx];
+
+      logger?.approvalEvent(
+        currentStep.stepId,
+        decision.approved,
+        decision.selectedVariant,
+      );
+
+      if (decision.approved) {
+        // Mark step completed
+        rs.steps[idx].status = "completed" as StepStatus;
+        rs.steps[idx].approvedAt = new Date();
+        rs.steps[idx].selectedVariant = decision.selectedVariant;
+        publishState();
+
+        // Continue from next step
+        await runSteps(idx + 1, rs.inputs);
+      } else if (decision.regenerate) {
+        // Retry the same step
+        rs.steps[idx].status = "pending" as StepStatus;
+        rs.steps[idx].rejectedAt = new Date();
+        rs.steps[idx].feedback = decision.feedback;
+        publishState();
+
+        await runSteps(idx, rs.inputs);
+      } else {
+        // Rejected – stop pipeline
+        rs.steps[idx].status = "rejected" as StepStatus;
+        rs.steps[idx].rejectedAt = new Date();
+        rs.steps[idx].feedback = decision.feedback;
+        rs.status = "failed";
+        publishState();
+      }
+    },
+    [publishState, runSteps],
+  );
+
+  // ─────────────────────────────────────────
+  //  retry()
+  // ─────────────────────────────────────────
+
+  const retry = useCallback(
+    async (_modelId?: string) => {
+      const rs = runStateRef.current;
+      if (!rs) return;
+
+      const idx = rs.currentStepIndex;
+      const step = rs.steps[idx];
+      if (!step) return;
+
+      // Reset step state
+      step.status = "pending" as StepStatus;
+      step.result = undefined;
+      step.completedAt = undefined;
+      publishState();
+
+      await runSteps(idx, rs.inputs);
+    },
+    [publishState, runSteps],
+  );
+
+  // ─────────────────────────────────────────
+  //  cancel()
+  // ─────────────────────────────────────────
+
   const cancel = useCallback(() => {
-    if (state) {
-      setState({ ...state, status: 'cancelled' as PipelineStatus });
+    const rs = runStateRef.current;
+    if (rs && (rs.status === "running" || rs.status === "awaiting_approval")) {
+      rs.status = "cancelled" as PipelineStatus;
+      rs.completedAt = new Date();
+      publishState();
     }
     loggerRef.current?.destroy();
-  }, [state]);
+  }, [publishState]);
 
-  // Reset pipeline
+  // ─────────────────────────────────────────
+  //  reset()
+  // ─────────────────────────────────────────
+
   const reset = useCallback(() => {
+    runStateRef.current = null;
+    previousResultsRef.current = {};
+    pipelineConfigRef.current = null;
+    activeStepsRef.current = [];
+    orchestratorRef.current = null;
+
+    loggerRef.current?.destroy();
+    loggerRef.current = null;
+    outputManagerRef.current = null;
+
     setState(null);
     setCurrentResult(null);
     setVtonResults(null);
     setVideoResult(null);
-    orchestratorRef.current = null;
-    loggerRef.current?.destroy();
-    loggerRef.current = null;
-    outputManagerRef.current = null;
   }, []);
 
   // Cleanup on unmount

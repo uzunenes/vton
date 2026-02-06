@@ -1,13 +1,24 @@
 /**
  * Virtual Try-On Step
  * Uses FASHN v1.6 and Leffa models for A/B comparison
+ *
+ * Features:
+ * - Circuit breaker protection
+ * - Automatic retry with exponential backoff
+ * - Graceful degradation (fallback to secondary model)
  */
 
-import { fal } from '@/lib/fal';
-import { StepResult, VTONOutput, PipelineInputs, SegmentationOutput } from '@/types/pipeline';
-import { modelRegistry } from '@/lib/models/ModelRegistry';
-import { mapCategory } from '@/types/models';
-import { PipelineConfig } from '../PipelineOrchestrator';
+import { fal } from "@/lib/fal";
+import {
+  StepResult,
+  VTONOutput,
+  PipelineInputs,
+  GarmentCategory,
+} from "@/types/pipeline";
+import { modelRegistry } from "@/lib/models/ModelRegistry";
+import { PipelineConfig } from "../PipelineOrchestrator";
+import { circuitBreakers, withRetry } from "@/lib/resilience";
+import { env } from "@/lib/config/environment";
 
 export interface VTONStepInput {
   stepId: string;
@@ -16,13 +27,18 @@ export interface VTONStepInput {
   config: PipelineConfig;
 }
 
-// Run a single VTON model
+// Run a single VTON model with resilience (circuit breaker + retry)
 async function runVTONModel(
   modelId: string,
   humanImageUrl: string,
   garmentImageUrl: string,
-  category: string
-): Promise<{ success: boolean; imageUrl?: string; error?: string; processingTimeMs: number }> {
+  category: string,
+): Promise<{
+  success: boolean;
+  imageUrl?: string;
+  error?: string;
+  processingTimeMs: number;
+}> {
   const startTime = Date.now();
   const modelConfig = modelRegistry.getVTONModel(modelId);
 
@@ -35,40 +51,67 @@ async function runVTONModel(
   }
 
   try {
-    const mappedCategory = mapCategory(modelId, category);
     const input = modelRegistry.buildVTONInput(
       modelId,
       humanImageUrl,
       garmentImageUrl,
-      category as any
+      category as GarmentCategory,
     );
 
-    console.log(`[VTON] Calling ${modelId} with input:`, input);
+    if (env.enableDebugLogs) {
+      console.log(`[VTON] Calling ${modelId} with input:`, input);
+    }
 
-    const result = await fal.subscribe(modelConfig.modelPath, {
-      input,
-      logs: true,
-    }) as any;
+    // Execute with circuit breaker and retry for resilience
+    const result = await circuitBreakers.vton.execute(() =>
+      withRetry(
+        () =>
+          fal.subscribe(modelConfig.modelPath, {
+            input,
+            logs: env.enableDebugLogs,
+          }),
+        {
+          maxRetries: env.maxRetries,
+          onRetry: (attempt, error) => {
+            console.warn(
+              `[VTON] ${modelId} retry attempt ${attempt}:`,
+              (error as Error).message,
+            );
+          },
+        },
+      ),
+    );
 
     const processingTimeMs = Date.now() - startTime;
-    const outputData = result.data || result;
+    const outputData = (result as Record<string, unknown>).data || result;
+    const out = outputData as Record<string, unknown>;
 
     // Extract image URL based on model output format
     let imageUrl: string | undefined;
-    if (outputData.image?.url) {
-      imageUrl = outputData.image.url;
-    } else if (outputData.output?.url) {
-      imageUrl = outputData.output.url;
-    } else if (outputData.url) {
-      imageUrl = outputData.url;
-    } else if (typeof outputData.image === 'string') {
-      imageUrl = outputData.image;
-    } else if (Array.isArray(outputData.images) && outputData.images.length > 0) {
-      imageUrl = outputData.images[0].url || outputData.images[0];
+    const imageField = out.image as
+      | Record<string, unknown>
+      | string
+      | undefined;
+    const outputField = out.output as Record<string, unknown> | undefined;
+    const imagesField = out.images as
+      | Array<Record<string, unknown> | string>
+      | undefined;
+
+    if (typeof imageField === "object" && imageField?.url) {
+      imageUrl = imageField.url as string;
+    } else if (outputField?.url) {
+      imageUrl = outputField.url as string;
+    } else if (typeof out.url === "string") {
+      imageUrl = out.url;
+    } else if (typeof imageField === "string") {
+      imageUrl = imageField;
+    } else if (Array.isArray(imagesField) && imagesField.length > 0) {
+      const first = imagesField[0];
+      imageUrl = typeof first === "string" ? first : (first.url as string);
     }
 
     if (!imageUrl) {
-      throw new Error('No image URL in response');
+      throw new Error("No image URL in VTON response");
     }
 
     return {
@@ -80,14 +123,14 @@ async function runVTONModel(
     console.error(`[VTON] ${modelId} error:`, error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: error instanceof Error ? error.message : "Unknown VTON error",
       processingTimeMs: Date.now() - startTime,
     };
   }
 }
 
 export async function executeVirtualTryOn(
-  input: VTONStepInput
+  input: VTONStepInput,
 ): Promise<StepResult<VTONOutput>> {
   const startTime = Date.now();
   const { primary, secondary } = modelRegistry.getDefaultVTONModels();
@@ -96,32 +139,49 @@ export async function executeVirtualTryOn(
     // Get human image URL
     const humanImageUrl = input.inputs.userImageUrl;
     if (!humanImageUrl) {
-      throw new Error('No user image URL provided');
+      throw new Error("No user image URL provided");
     }
 
     // Get garment image URL (use segmented if available)
-    let garmentImageUrl = input.inputs.garmentImageUrl;
+    const garmentImageUrl = input.inputs.garmentImageUrl;
 
     // Check if segmentation step was run and use its output
-    const segmentationResult = input.previousResults['segmentation'];
-    if (segmentationResult?.success && segmentationResult.data) {
-      const segData = segmentationResult.data as SegmentationOutput;
-      // Use original garment for now - segmented mask would need compositing
-      // garmentImageUrl = segData.segmentedImageUrl;
-    }
+    const segmentationResult = input.previousResults["segmentation"];
+    // If segmentation was run, its output could be used for compositing
+    // For now we use the original garment image directly
 
     if (!garmentImageUrl) {
-      throw new Error('No garment image URL provided');
+      throw new Error("No garment image URL provided");
     }
 
     const category = input.inputs.garmentCategory;
+
+    // Check for mock mode
+    if (input.config.useMock) {
+      console.log("[VTON] MOCK MODE: Returning mock try-on result");
+      const output: VTONOutput = {
+        resultImageUrl: humanImageUrl, // In mock mode, just return the human image
+        modelUsed: "mock-vton",
+      };
+
+      return {
+        success: true,
+        data: output,
+        processingTimeMs: 500,
+        modelUsed: "mock-vton",
+        inputUrls: [humanImageUrl, garmentImageUrl],
+        outputUrls: [humanImageUrl],
+        metadata: { isMock: true, category },
+        timestamp: new Date(),
+      };
+    }
 
     // Check if A/B comparison is enabled
     const enableAB = input.config.enableABComparison;
 
     if (enableAB) {
       // Run both models in parallel
-      console.log('[VTON] Running A/B comparison with FASHN and Leffa');
+      console.log("[VTON] Running A/B comparison with FASHN and Leffa");
 
       const [fashnResult, leffaResult] = await Promise.all([
         runVTONModel(primary.id, humanImageUrl, garmentImageUrl, category),
@@ -132,12 +192,14 @@ export async function executeVirtualTryOn(
 
       // Check if at least one succeeded
       if (!fashnResult.success && !leffaResult.success) {
-        throw new Error(`Both models failed: FASHN: ${fashnResult.error}, Leffa: ${leffaResult.error}`);
+        throw new Error(
+          `Both models failed: FASHN: ${fashnResult.error}, Leffa: ${leffaResult.error}`,
+        );
       }
 
       // Build output with variants
       const output: VTONOutput = {
-        resultImageUrl: fashnResult.imageUrl || leffaResult.imageUrl || '',
+        resultImageUrl: fashnResult.imageUrl || leffaResult.imageUrl || "",
         modelUsed: fashnResult.success ? primary.id : secondary.id,
         variants: {},
       };
@@ -156,16 +218,15 @@ export async function executeVirtualTryOn(
         };
       }
 
-      const outputUrls = [
-        fashnResult.imageUrl,
-        leffaResult.imageUrl,
-      ].filter(Boolean) as string[];
+      const outputUrls = [fashnResult.imageUrl, leffaResult.imageUrl].filter(
+        Boolean,
+      ) as string[];
 
       return {
         success: true,
         data: output,
         processingTimeMs,
-        modelUsed: 'ab-comparison',
+        modelUsed: "ab-comparison",
         inputUrls: [humanImageUrl, garmentImageUrl],
         outputUrls,
         metadata: {
@@ -181,12 +242,17 @@ export async function executeVirtualTryOn(
       };
     } else {
       // Run only primary model
-      console.log('[VTON] Running single model:', primary.id);
+      console.log("[VTON] Running single model:", primary.id);
 
-      const result = await runVTONModel(primary.id, humanImageUrl, garmentImageUrl, category);
+      const result = await runVTONModel(
+        primary.id,
+        humanImageUrl,
+        garmentImageUrl,
+        category,
+      );
 
       if (!result.success || !result.imageUrl) {
-        throw new Error(result.error || 'VTON failed');
+        throw new Error(result.error || "VTON failed");
       }
 
       const output: VTONOutput = {
@@ -210,14 +276,17 @@ export async function executeVirtualTryOn(
     }
   } catch (error) {
     const processingTimeMs = Date.now() - startTime;
-    console.error('[VTON] Error:', error);
+    console.error("[VTON] Error:", error);
 
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown VTON error',
+      error: error instanceof Error ? error.message : "Unknown VTON error",
       processingTimeMs,
       modelUsed: primary.id,
-      inputUrls: [input.inputs.userImageUrl || '', input.inputs.garmentImageUrl || ''],
+      inputUrls: [
+        input.inputs.userImageUrl || "",
+        input.inputs.garmentImageUrl || "",
+      ],
       outputUrls: [],
       metadata: {},
       timestamp: new Date(),
@@ -226,16 +295,19 @@ export async function executeVirtualTryOn(
 }
 
 // Helper to get the selected variant URL
-export function getSelectedVTONUrl(result: StepResult<VTONOutput>, selectedVariant?: string): string | undefined {
+export function getSelectedVTONUrl(
+  result: StepResult<VTONOutput>,
+  selectedVariant?: string,
+): string | undefined {
   if (!result.success || !result.data) return undefined;
 
   const output = result.data;
 
   if (selectedVariant && output.variants) {
-    if (selectedVariant === 'fashn' && output.variants.fashn) {
+    if (selectedVariant === "fashn" && output.variants.fashn) {
       return output.variants.fashn.imageUrl;
     }
-    if (selectedVariant === 'leffa' && output.variants.leffa) {
+    if (selectedVariant === "leffa" && output.variants.leffa) {
       return output.variants.leffa.imageUrl;
     }
   }

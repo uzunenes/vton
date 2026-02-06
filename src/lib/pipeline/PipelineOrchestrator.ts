@@ -16,13 +16,17 @@ import {
   StepStatus,
   StepResult,
   GarmentCategory,
-} from '@/types/pipeline';
+} from "@/types/pipeline";
 import {
   Session,
   SessionId,
   generateSessionId,
   formatDateForDirectory,
-} from '@/types/session';
+} from "@/types/session";
+import {
+  getEnvironmentConfig,
+  getPipelineConfig as getEnvPipelineConfig,
+} from "@/lib/config/environment";
 
 // Step definitions
 export interface StepDefinition {
@@ -40,28 +44,21 @@ export interface StepDefinition {
 export interface PipelineConfig {
   enableSegmentation: boolean;
   enableABComparison: boolean;
-  enableFaceRestoration: boolean;
   enableVideo: boolean;
   videoDuration: number;
   outputDirectory: string;
+  useMock: boolean;
 }
 
-// Default pipeline configuration
-export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
-  enableSegmentation: true,
-  enableABComparison: true,
-  enableFaceRestoration: true,
-  enableVideo: true,
-  videoDuration: 5,
-  outputDirectory: 'outputs',
-};
+// Default pipeline configuration - now sourced from environment
+export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = getEnvPipelineConfig();
 
 // Step definitions for the VTON pipeline
 export const PIPELINE_STEPS: StepDefinition[] = [
   {
-    id: 'segmentation',
-    name: 'Garment Segmentation',
-    description: 'Remove background from garment image using SAM2',
+    id: "segmentation",
+    name: "Garment Segmentation",
+    description: "Remove background from garment image using SAM2",
     requiresApproval: true,
     canRetry: true,
     maxRetries: 2,
@@ -69,19 +66,9 @@ export const PIPELINE_STEPS: StepDefinition[] = [
     autoApprove: false,
   },
   {
-    id: 'pose-detection',
-    name: 'Pose Detection',
-    description: 'Detect and validate user pose from camera capture',
-    requiresApproval: true,
-    canRetry: true,
-    maxRetries: 3,
-    estimatedTimeSeconds: 2,
-    autoApprove: false,
-  },
-  {
-    id: 'virtual-tryon',
-    name: 'Virtual Try-On',
-    description: 'Generate try-on image using AI models',
+    id: "virtual-tryon",
+    name: "Virtual Try-On",
+    description: "Generate try-on image using AI models",
     requiresApproval: true,
     canRetry: true,
     maxRetries: 2,
@@ -89,19 +76,9 @@ export const PIPELINE_STEPS: StepDefinition[] = [
     autoApprove: false,
   },
   {
-    id: 'face-restoration',
-    name: 'Face Restoration',
-    description: 'Restore face quality if degraded by try-on',
-    requiresApproval: true,
-    canRetry: true,
-    maxRetries: 1,
-    estimatedTimeSeconds: 3,
-    autoApprove: false,
-  },
-  {
-    id: 'video-generation',
-    name: 'Video Generation',
-    description: 'Generate runway video from try-on result',
+    id: "video-generation",
+    name: "Video Generation",
+    description: "Generate runway video from try-on result",
     requiresApproval: true,
     canRetry: true,
     maxRetries: 1,
@@ -129,31 +106,35 @@ export class PipelineOrchestrator {
     return {
       sessionId: generateSessionId(),
       currentStepIndex: -1,
-      steps: activeSteps.map(step => ({
+      steps: activeSteps.map((step) => ({
         stepId: step.id,
-        status: 'pending' as StepStatus,
+        status: "pending" as StepStatus,
         attempts: 0,
       })),
       startedAt: new Date(),
-      status: 'idle',
+      status: "idle",
       inputs: {
-        garmentCategory: 'tops',
+        garmentCategory: "tops",
       },
     };
   }
 
   // Get steps that are active based on config
   private getActiveSteps(): StepDefinition[] {
-    return PIPELINE_STEPS.filter(step => {
-      if (step.id === 'segmentation' && !this.config.enableSegmentation) return false;
-      if (step.id === 'face-restoration' && !this.config.enableFaceRestoration) return false;
-      if (step.id === 'video-generation' && !this.config.enableVideo) return false;
+    return PIPELINE_STEPS.filter((step) => {
+      if (step.id === "segmentation" && !this.config.enableSegmentation)
+        return false;
+      if (step.id === "video-generation" && !this.config.enableVideo)
+        return false;
       return true;
     });
   }
 
   // Register a step executor
-  registerStepExecutor(stepId: string, executor: (input: unknown) => Promise<StepResult>): void {
+  registerStepExecutor(
+    stepId: string,
+    executor: (input: unknown) => Promise<StepResult>,
+  ): void {
     this.stepExecutors.set(stepId, executor);
   }
 
@@ -186,7 +167,7 @@ export class PipelineOrchestrator {
     };
 
     const handlers = this.eventHandlers.get(type) || [];
-    handlers.forEach(handler => handler(event));
+    handlers.forEach((handler) => handler(event));
   }
 
   // Get current state
@@ -201,7 +182,10 @@ export class PipelineOrchestrator {
 
   // Get current step
   getCurrentStep(): PipelineStepState | null {
-    if (this.state.currentStepIndex < 0 || this.state.currentStepIndex >= this.state.steps.length) {
+    if (
+      this.state.currentStepIndex < 0 ||
+      this.state.currentStepIndex >= this.state.steps.length
+    ) {
       return null;
     }
     return this.state.steps[this.state.currentStepIndex];
@@ -209,7 +193,7 @@ export class PipelineOrchestrator {
 
   // Get step definition
   getStepDefinition(stepId: string): StepDefinition | undefined {
-    return PIPELINE_STEPS.find(s => s.id === stepId);
+    return PIPELINE_STEPS.find((s) => s.id === stepId);
   }
 
   // Update inputs
@@ -219,13 +203,13 @@ export class PipelineOrchestrator {
 
   // Start the pipeline
   async start(inputs: PipelineInputs): Promise<void> {
-    if (this.state.status === 'running') {
-      throw new Error('Pipeline is already running');
+    if (this.state.status === "running") {
+      throw new Error("Pipeline is already running");
     }
 
     this.state = this.createInitialState();
     this.state.inputs = inputs;
-    this.state.status = 'running';
+    this.state.status = "running";
     this.state.startedAt = new Date();
 
     await this.executeNextStep();
@@ -237,9 +221,9 @@ export class PipelineOrchestrator {
 
     if (this.state.currentStepIndex >= this.state.steps.length) {
       // Pipeline completed
-      this.state.status = 'completed';
+      this.state.status = "completed";
       this.state.completedAt = new Date();
-      this.emit('pipeline_completed');
+      this.emit("pipeline_completed");
       return;
     }
 
@@ -251,11 +235,11 @@ export class PipelineOrchestrator {
     }
 
     // Update step state
-    stepState.status = 'running';
+    stepState.status = "running";
     stepState.startedAt = new Date();
     stepState.attempts++;
 
-    this.emit('step_started', stepState.stepId);
+    this.emit("step_started", stepState.stepId);
 
     try {
       // Get executor for this step
@@ -270,37 +254,37 @@ export class PipelineOrchestrator {
 
       if (result.success) {
         stepState.completedAt = new Date();
-        this.emit('step_completed', stepState.stepId, result);
+        this.emit("step_completed", stepState.stepId, result);
 
         // Check if approval is required
         if (stepDef.requiresApproval && !stepDef.autoApprove) {
-          stepState.status = 'awaiting_approval';
-          this.state.status = 'awaiting_approval';
-          this.emit('awaiting_approval', stepState.stepId, result);
+          stepState.status = "awaiting_approval";
+          this.state.status = "awaiting_approval";
+          this.emit("awaiting_approval", stepState.stepId, result);
         } else {
           // Auto-approve and continue
-          stepState.status = 'completed';
+          stepState.status = "completed";
           stepState.approvedAt = new Date();
           await this.executeNextStep();
         }
       } else {
-        throw new Error(result.error || 'Step execution failed');
+        throw new Error(result.error || "Step execution failed");
       }
     } catch (error) {
-      stepState.status = 'failed';
+      stepState.status = "failed";
       stepState.completedAt = new Date();
       stepState.result = {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : "Unknown error",
         processingTimeMs: 0,
-        modelUsed: '',
+        modelUsed: "",
         inputUrls: [],
         outputUrls: [],
         metadata: {},
         timestamp: new Date(),
       };
 
-      this.emit('step_failed', stepState.stepId, error);
+      this.emit("step_failed", stepState.stepId, error);
 
       // Check if retry is possible
       if (stepDef.canRetry && stepState.attempts < stepDef.maxRetries) {
@@ -309,8 +293,8 @@ export class PipelineOrchestrator {
         await this.executeNextStep();
       } else {
         // Pipeline failed
-        this.state.status = 'failed';
-        this.emit('pipeline_failed', stepState.stepId, error);
+        this.state.status = "failed";
+        this.emit("pipeline_failed", stepState.stepId, error);
       }
     }
   }
@@ -319,11 +303,14 @@ export class PipelineOrchestrator {
   private buildStepInput(stepId: string): unknown {
     const inputs = this.state.inputs;
     const previousResults = this.state.steps
-      .filter(s => s.status === 'completed' && s.result)
-      .reduce((acc, s) => {
-        acc[s.stepId] = s.result;
-        return acc;
-      }, {} as Record<string, StepResult | undefined>);
+      .filter((s) => s.status === "completed" && s.result)
+      .reduce(
+        (acc, s) => {
+          acc[s.stepId] = s.result;
+          return acc;
+        },
+        {} as Record<string, StepResult | undefined>,
+      );
 
     return {
       stepId,
@@ -336,38 +323,38 @@ export class PipelineOrchestrator {
   // Approve current step
   async approveStep(decision: ApprovalDecision): Promise<void> {
     const currentStep = this.getCurrentStep();
-    if (!currentStep || currentStep.status !== 'awaiting_approval') {
-      throw new Error('No step awaiting approval');
+    if (!currentStep || currentStep.status !== "awaiting_approval") {
+      throw new Error("No step awaiting approval");
     }
 
     if (decision.approved) {
-      currentStep.status = 'completed';
+      currentStep.status = "completed";
       currentStep.approvedAt = new Date();
       currentStep.feedback = decision.feedback;
       currentStep.selectedVariant = decision.selectedVariant;
 
-      this.state.status = 'running';
-      this.emit('step_approved', currentStep.stepId, decision);
+      this.state.status = "running";
+      this.emit("step_approved", currentStep.stepId, decision);
 
       await this.executeNextStep();
     } else if (decision.regenerate) {
       // Retry with potentially different model
-      currentStep.status = 'pending';
+      currentStep.status = "pending";
       currentStep.rejectedAt = new Date();
       currentStep.feedback = decision.feedback;
 
       this.state.currentStepIndex--;
-      this.state.status = 'running';
-      this.emit('step_rejected', currentStep.stepId, decision);
+      this.state.status = "running";
+      this.emit("step_rejected", currentStep.stepId, decision);
 
       await this.executeNextStep();
     } else {
       // Rejected - go back
-      currentStep.status = 'rejected';
+      currentStep.status = "rejected";
       currentStep.rejectedAt = new Date();
       currentStep.feedback = decision.feedback;
 
-      this.emit('step_rejected', currentStep.stepId, decision);
+      this.emit("step_rejected", currentStep.stepId, decision);
     }
   }
 
@@ -375,21 +362,21 @@ export class PipelineOrchestrator {
   async retryStep(newModelId?: string): Promise<void> {
     const currentStep = this.getCurrentStep();
     if (!currentStep) {
-      throw new Error('No current step to retry');
+      throw new Error("No current step to retry");
     }
 
     const stepDef = this.getStepDefinition(currentStep.stepId);
     if (!stepDef || !stepDef.canRetry) {
-      throw new Error('Step cannot be retried');
+      throw new Error("Step cannot be retried");
     }
 
     if (currentStep.attempts >= stepDef.maxRetries) {
-      throw new Error('Max retries exceeded');
+      throw new Error("Max retries exceeded");
     }
 
-    currentStep.status = 'pending';
+    currentStep.status = "pending";
     this.state.currentStepIndex--;
-    this.state.status = 'running';
+    this.state.status = "running";
 
     // Store new model preference if provided
     if (newModelId) {
@@ -404,16 +391,19 @@ export class PipelineOrchestrator {
 
   // Cancel the pipeline
   cancel(): void {
-    if (this.state.status === 'running' || this.state.status === 'awaiting_approval') {
-      this.state.status = 'cancelled';
+    if (
+      this.state.status === "running" ||
+      this.state.status === "awaiting_approval"
+    ) {
+      this.state.status = "cancelled";
       this.state.completedAt = new Date();
 
       const currentStep = this.getCurrentStep();
-      if (currentStep && currentStep.status === 'running') {
-        currentStep.status = 'failed';
+      if (currentStep && currentStep.status === "running") {
+        currentStep.status = "failed";
       }
 
-      this.emit('pipeline_cancelled');
+      this.emit("pipeline_cancelled");
     }
   }
 
@@ -424,7 +414,9 @@ export class PipelineOrchestrator {
 
   // Get progress percentage
   getProgress(): number {
-    const completedSteps = this.state.steps.filter(s => s.status === 'completed').length;
+    const completedSteps = this.state.steps.filter(
+      (s) => s.status === "completed",
+    ).length;
     return Math.round((completedSteps / this.state.steps.length) * 100);
   }
 
@@ -439,7 +431,7 @@ export class PipelineOrchestrator {
 
     // Add remaining time for current step if running
     const currentStep = this.getCurrentStep();
-    if (currentStep && currentStep.status === 'running') {
+    if (currentStep && currentStep.status === "running") {
       const stepDef = this.getStepDefinition(currentStep.stepId);
       if (stepDef) {
         const elapsed = currentStep.startedAt
@@ -455,28 +447,29 @@ export class PipelineOrchestrator {
   // Check if pipeline can proceed
   canProceed(): boolean {
     return (
-      this.state.status === 'idle' ||
-      this.state.status === 'awaiting_approval'
+      this.state.status === "idle" || this.state.status === "awaiting_approval"
     );
   }
 
   // Check if pipeline is waiting for user input
   isAwaitingApproval(): boolean {
-    return this.state.status === 'awaiting_approval';
+    return this.state.status === "awaiting_approval";
   }
 
   // Check if pipeline is complete
   isComplete(): boolean {
-    return this.state.status === 'completed';
+    return this.state.status === "completed";
   }
 
   // Check if pipeline failed
   isFailed(): boolean {
-    return this.state.status === 'failed';
+    return this.state.status === "failed";
   }
 }
 
 // Factory function to create a new pipeline
-export function createPipeline(config?: Partial<PipelineConfig>): PipelineOrchestrator {
+export function createPipeline(
+  config?: Partial<PipelineConfig>,
+): PipelineOrchestrator {
   return new PipelineOrchestrator(config);
 }

@@ -1,13 +1,25 @@
 /**
  * Video Generation Step
  * Uses Kling 2.0 Master for fashion runway video generation
+ *
+ * Features:
+ * - Circuit breaker protection
+ * - Automatic retry with exponential backoff
+ * - Longer timeout for video generation (120s)
  */
 
-import { fal } from '@/lib/fal';
-import { StepResult, VideoOutput, PipelineInputs, VTONOutput } from '@/types/pipeline';
-import { modelRegistry } from '@/lib/models/ModelRegistry';
-import { PipelineConfig } from '../PipelineOrchestrator';
-import { getSelectedVTONUrl } from './VirtualTryOnStep';
+import { fal } from "@/lib/fal";
+import {
+  StepResult,
+  VideoOutput,
+  PipelineInputs,
+  VTONOutput,
+} from "@/types/pipeline";
+import { modelRegistry } from "@/lib/models/ModelRegistry";
+import { PipelineConfig } from "../PipelineOrchestrator";
+import { getSelectedVTONUrl } from "./VirtualTryOnStep";
+import { circuitBreakers, withRetry } from "@/lib/resilience";
+import { env } from "@/lib/config/environment";
 
 export interface VideoStepInput {
   stepId: string;
@@ -18,35 +30,43 @@ export interface VideoStepInput {
 }
 
 export async function executeVideoGeneration(
-  input: VideoStepInput
+  input: VideoStepInput,
 ): Promise<StepResult<VideoOutput>> {
   const startTime = Date.now();
   const modelConfig = modelRegistry.getDefaultVideoModel();
 
   try {
     // Get the VTON result image
-    const vtonResult = input.previousResults['virtual-tryon'] as StepResult<VTONOutput> | undefined;
+    const vtonResult = input.previousResults["virtual-tryon"] as
+      | StepResult<VTONOutput>
+      | undefined;
 
     let sourceImageUrl: string | undefined;
 
     if (vtonResult?.success && vtonResult.data) {
       // Use selected variant or default
-      sourceImageUrl = getSelectedVTONUrl(vtonResult, input.selectedVTONVariant);
+      sourceImageUrl = getSelectedVTONUrl(
+        vtonResult,
+        input.selectedVTONVariant,
+      );
     }
 
     // Fallback to face-restoration output if available
-    const faceRestorationResult = input.previousResults['face-restoration'];
-    if (faceRestorationResult?.success && faceRestorationResult.outputUrls?.length > 0) {
+    const faceRestorationResult = input.previousResults["face-restoration"];
+    if (
+      faceRestorationResult?.success &&
+      faceRestorationResult.outputUrls?.length > 0
+    ) {
       sourceImageUrl = faceRestorationResult.outputUrls[0];
     }
 
     if (!sourceImageUrl) {
-      throw new Error('No source image available for video generation');
+      throw new Error("No source image available for video generation");
     }
 
     // Build the prompt
     const prompt = modelRegistry.getFashionVideoPrompt(
-      `The model is wearing a ${input.inputs.garmentCategory} garment. Showcase the clothing with elegant movement.`
+      `The model is wearing a ${input.inputs.garmentCategory} garment. Showcase the clothing with elegant movement.`,
     );
 
     // Build video input
@@ -54,19 +74,61 @@ export async function executeVideoGeneration(
       modelConfig.id,
       sourceImageUrl,
       prompt,
-      input.config.videoDuration
+      input.config.videoDuration,
     );
 
-    console.log('[Video] Calling Kling 2.0 with input:', {
-      model: modelConfig.modelPath,
-      duration: input.config.videoDuration,
-      prompt: prompt.substring(0, 100) + '...',
-    });
+    // Check for mock mode
+    if (input.config.useMock) {
+      console.log("[Video] MOCK MODE: Returning mock video result");
+      const output: VideoOutput = {
+        videoUrl:
+          "https://storage.googleapis.com/falserverless/model_tests/kling/test_video.mp4", // A public test video
+        duration: input.config.videoDuration,
+        resolution: "720p",
+        thumbnailUrl: sourceImageUrl,
+      };
 
-    const result = await fal.subscribe(modelConfig.modelPath, {
-      input: videoInput,
-      logs: true,
-    }) as any;
+      return {
+        success: true,
+        data: output,
+        processingTimeMs: 1000,
+        modelUsed: "mock-kling",
+        inputUrls: [sourceImageUrl],
+        outputUrls: [output.videoUrl],
+        metadata: { isMock: true },
+        timestamp: new Date(),
+      };
+    }
+
+    if (env.enableDebugLogs) {
+      console.log("[Video] Calling Kling 2.0 with input:", {
+        model: modelConfig.modelPath,
+        duration: input.config.videoDuration,
+        prompt: prompt.substring(0, 100) + "...",
+      });
+    }
+
+    // Execute with circuit breaker and retry for resilience
+    // Video generation has fewer retries due to high cost ($1/run)
+    const result = (await circuitBreakers.video.execute(() =>
+      withRetry(
+        () =>
+          fal.subscribe(modelConfig.modelPath, {
+            input: videoInput,
+            logs: env.enableDebugLogs,
+          }),
+        {
+          maxRetries: 1, // Only 1 retry for video due to cost
+          baseDelayMs: 2000, // Longer base delay
+          onRetry: (attempt, error) => {
+            console.warn(
+              `[Video] Retry attempt ${attempt}:`,
+              (error as Error).message,
+            );
+          },
+        },
+      ),
+    )) as any;
 
     const processingTimeMs = Date.now() - startTime;
     const outputData = result.data || result;
@@ -79,20 +141,23 @@ export async function executeVideoGeneration(
       videoUrl = outputData.output.url;
     } else if (outputData.url) {
       videoUrl = outputData.url;
-    } else if (typeof outputData.video === 'string') {
+    } else if (typeof outputData.video === "string") {
       videoUrl = outputData.video;
-    } else if (Array.isArray(outputData.videos) && outputData.videos.length > 0) {
+    } else if (
+      Array.isArray(outputData.videos) &&
+      outputData.videos.length > 0
+    ) {
       videoUrl = outputData.videos[0].url || outputData.videos[0];
     }
 
     if (!videoUrl) {
-      throw new Error('No video URL in response');
+      throw new Error("No video URL in response");
     }
 
     const output: VideoOutput = {
       videoUrl,
       duration: input.config.videoDuration,
-      resolution: '720p',
+      resolution: "720p",
       thumbnailUrl: sourceImageUrl, // Use source image as thumbnail
     };
 
@@ -113,11 +178,14 @@ export async function executeVideoGeneration(
     };
   } catch (error) {
     const processingTimeMs = Date.now() - startTime;
-    console.error('[Video] Error:', error);
+    console.error("[Video] Error:", error);
 
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown video generation error',
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unknown video generation error",
       processingTimeMs,
       modelUsed: modelConfig.id,
       inputUrls: [],
@@ -132,7 +200,7 @@ export async function executeVideoGeneration(
 export async function executeVideoWithCustomPrompt(
   sourceImageUrl: string,
   customPrompt: string,
-  duration: number = 5
+  duration: number = 5,
 ): Promise<StepResult<VideoOutput>> {
   const startTime = Date.now();
   const modelConfig = modelRegistry.getDefaultVideoModel();
@@ -142,20 +210,20 @@ export async function executeVideoWithCustomPrompt(
       modelConfig.id,
       sourceImageUrl,
       customPrompt,
-      duration
+      duration,
     );
 
-    const result = await fal.subscribe(modelConfig.modelPath, {
+    const result = (await fal.subscribe(modelConfig.modelPath, {
       input: videoInput,
       logs: true,
-    }) as any;
+    })) as any;
 
     const processingTimeMs = Date.now() - startTime;
     const outputData = result.data || result;
 
     const videoUrl = outputData.video?.url || outputData.output?.url;
     if (!videoUrl) {
-      throw new Error('No video URL in response');
+      throw new Error("No video URL in response");
     }
 
     return {
@@ -163,7 +231,7 @@ export async function executeVideoWithCustomPrompt(
       data: {
         videoUrl,
         duration,
-        resolution: '720p',
+        resolution: "720p",
         thumbnailUrl: sourceImageUrl,
       },
       processingTimeMs,
@@ -180,7 +248,7 @@ export async function executeVideoWithCustomPrompt(
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Video generation failed',
+      error: error instanceof Error ? error.message : "Video generation failed",
       processingTimeMs: Date.now() - startTime,
       modelUsed: modelConfig.id,
       inputUrls: [sourceImageUrl],

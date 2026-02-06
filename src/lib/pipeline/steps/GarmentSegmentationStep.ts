@@ -1,12 +1,22 @@
 /**
  * Garment Segmentation Step
  * Uses SAM2 to segment the garment from background
+ *
+ * Features:
+ * - Circuit breaker protection
+ * - Automatic retry with exponential backoff
  */
 
-import { fal } from '@/lib/fal';
-import { StepResult, SegmentationOutput, PipelineInputs } from '@/types/pipeline';
-import { modelRegistry } from '@/lib/models/ModelRegistry';
-import { PipelineConfig } from '../PipelineOrchestrator';
+import { fal } from "@/lib/fal";
+import {
+  StepResult,
+  SegmentationOutput,
+  PipelineInputs,
+} from "@/types/pipeline";
+import { modelRegistry } from "@/lib/models/ModelRegistry";
+import { PipelineConfig } from "../PipelineOrchestrator";
+import { circuitBreakers, withRetry } from "@/lib/resilience";
+import { env } from "@/lib/config/environment";
 
 export interface SegmentationStepInput {
   stepId: string;
@@ -16,7 +26,7 @@ export interface SegmentationStepInput {
 }
 
 export async function executeGarmentSegmentation(
-  input: SegmentationStepInput
+  input: SegmentationStepInput,
 ): Promise<StepResult<SegmentationOutput>> {
   const startTime = Date.now();
   const modelConfig = modelRegistry.getDefaultSegmentationModel();
@@ -25,7 +35,7 @@ export async function executeGarmentSegmentation(
     // Get garment image URL
     const garmentImageUrl = input.inputs.garmentImageUrl;
     if (!garmentImageUrl) {
-      throw new Error('No garment image URL provided');
+      throw new Error("No garment image URL provided");
     }
 
     // For SAM2, we use prompts format with {x, y, label}
@@ -33,17 +43,58 @@ export async function executeGarmentSegmentation(
     const segmentInput = {
       image_url: garmentImageUrl,
       prompts: [
-        { x: 512, y: 512, label: 1 } // Center point, foreground
+        { x: 512, y: 512, label: 1 }, // Center point, foreground
       ],
       apply_mask: true,
     };
 
-    console.log('[Segmentation] Calling SAM2 with input:', segmentInput);
+    // Check for mock mode
+    if (input.config.useMock) {
+      console.log(
+        "[Segmentation] MOCK MODE: Returning mock segmentation result",
+      );
+      // In mock mode, we just return the original image as segmented
+      const output: SegmentationOutput = {
+        segmentedImageUrl: garmentImageUrl,
+        maskUrl: garmentImageUrl,
+        originalImageUrl: garmentImageUrl,
+      };
 
-    const result = await fal.subscribe(modelConfig.modelPath, {
-      input: segmentInput,
-      logs: true,
-    }) as any;
+      return {
+        success: true,
+        data: output,
+        processingTimeMs: 100, // Fast mock time
+        modelUsed: "mock-sam2",
+        inputUrls: [garmentImageUrl],
+        outputUrls: [garmentImageUrl],
+        metadata: { isMock: true },
+        timestamp: new Date(),
+      };
+    }
+
+    if (env.enableDebugLogs) {
+      console.log("[Segmentation] Calling SAM2 with input:", segmentInput);
+    }
+
+    // Execute with circuit breaker and retry for resilience
+    const result = (await circuitBreakers.segmentation.execute(() =>
+      withRetry(
+        () =>
+          fal.subscribe(modelConfig.modelPath, {
+            input: segmentInput,
+            logs: env.enableDebugLogs,
+          }),
+        {
+          maxRetries: env.maxRetries,
+          onRetry: (attempt, error) => {
+            console.warn(
+              `[Segmentation] Retry attempt ${attempt}:`,
+              (error as Error).message,
+            );
+          },
+        },
+      ),
+    )) as any;
 
     const processingTimeMs = Date.now() - startTime;
 
@@ -65,7 +116,7 @@ export async function executeGarmentSegmentation(
       maskUrl = outputData.masks[0].url || outputData.masks[0];
       segmentedImageUrl = maskUrl;
     } else {
-      throw new Error('No mask returned from SAM2');
+      throw new Error("No mask returned from SAM2");
     }
 
     const output: SegmentationOutput = {
@@ -89,14 +140,15 @@ export async function executeGarmentSegmentation(
     };
   } catch (error) {
     const processingTimeMs = Date.now() - startTime;
-    console.error('[Segmentation] Error:', error);
+    console.error("[Segmentation] Error:", error);
 
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown segmentation error',
+      error:
+        error instanceof Error ? error.message : "Unknown segmentation error",
       processingTimeMs,
       modelUsed: modelConfig.id,
-      inputUrls: [input.inputs.garmentImageUrl || ''],
+      inputUrls: [input.inputs.garmentImageUrl || ""],
       outputUrls: [],
       metadata: {},
       timestamp: new Date(),
@@ -106,17 +158,17 @@ export async function executeGarmentSegmentation(
 
 // Alternative: Use auto-segment for full automatic segmentation
 export async function executeAutoSegmentation(
-  garmentImageUrl: string
+  garmentImageUrl: string,
 ): Promise<StepResult<SegmentationOutput>> {
   const startTime = Date.now();
-  const modelConfig = modelRegistry.getSegmentationModel('sam2-auto');
+  const modelConfig = modelRegistry.getSegmentationModel("sam2-auto");
 
   if (!modelConfig) {
     return {
       success: false,
-      error: 'SAM2 auto-segment model not found',
+      error: "SAM2 auto-segment model not found",
       processingTimeMs: Date.now() - startTime,
-      modelUsed: 'sam2-auto',
+      modelUsed: "sam2-auto",
       inputUrls: [garmentImageUrl],
       outputUrls: [],
       metadata: {},
@@ -125,12 +177,12 @@ export async function executeAutoSegmentation(
   }
 
   try {
-    const result = await fal.subscribe(modelConfig.modelPath, {
+    const result = (await fal.subscribe(modelConfig.modelPath, {
       input: {
         image_url: garmentImageUrl,
       },
       logs: true,
-    }) as any;
+    })) as any;
 
     const processingTimeMs = Date.now() - startTime;
     const outputData = result.data || result;
@@ -138,7 +190,7 @@ export async function executeAutoSegmentation(
     // Auto-segment returns combined mask
     const maskUrl = outputData.combined_mask?.url;
     if (!maskUrl) {
-      throw new Error('No combined mask returned');
+      throw new Error("No combined mask returned");
     }
 
     const output: SegmentationOutput = {
@@ -163,7 +215,8 @@ export async function executeAutoSegmentation(
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Auto-segmentation failed',
+      error:
+        error instanceof Error ? error.message : "Auto-segmentation failed",
       processingTimeMs: Date.now() - startTime,
       modelUsed: modelConfig.id,
       inputUrls: [garmentImageUrl],
