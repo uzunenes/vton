@@ -11,7 +11,11 @@
       "Bash(ls -la \"C:\\\\Users\\\\euzun17\\\\.claude-worktrees\\\\antigravity-vton\\\\cool-visvesvaraya\\\\.env\"*)",
       "mcp__acp__Bash",
       "mcp__acp__Write",
-      "mcp__acp__Edit"
+      "mcp__acp__Edit",
+      "mcp__claude_ai_Supabase__search_docs",
+      "mcp__claude_ai_Tavily__tavily_extract",
+      "mcp__claude_ai_Tavily__tavily_crawl",
+      "mcp__claude_ai_Tavily__tavily_research"
     ]
   }
 }

@@ -101,20 +101,54 @@ export async function executeGarmentSegmentation(
     // Extract results
     const outputData = result.data || result;
 
-    // SAM2 returns image with mask applied
+    if (env.enableDebugLogs) {
+      console.log("[Segmentation] Raw output keys:", Object.keys(outputData));
+      if (outputData.combined_mask) {
+        console.log(
+          "[Segmentation] combined_mask available:",
+          !!outputData.combined_mask.url,
+        );
+      }
+      if (outputData.image) {
+        console.log("[Segmentation] image available:", !!outputData.image.url);
+      }
+      if (outputData.masks) {
+        console.log(
+          "[Segmentation] masks array available:",
+          outputData.masks.length,
+          "items",
+        );
+      }
+    }
+
+    // SAM2/SAM3 returns image with mask applied
+    // Priority: combined_mask (colored) > image > masks[0] (B/W)
     let segmentedImageUrl: string;
     let maskUrl: string;
 
-    if (outputData.image?.url) {
-      segmentedImageUrl = outputData.image.url;
-      maskUrl = outputData.image.url;
-    } else if (outputData.combined_mask?.url) {
+    // Priority 1: Use combined_mask for colored output
+    if (outputData.combined_mask?.url) {
       maskUrl = outputData.combined_mask.url;
       segmentedImageUrl = maskUrl;
-    } else if (outputData.masks && outputData.masks.length > 0) {
-      // Use the first/best mask
+      if (env.enableDebugLogs) {
+        console.log("[Segmentation] Using combined_mask for colored output");
+      }
+    }
+    // Priority 2: Use image field (fallback)
+    else if (outputData.image?.url) {
+      segmentedImageUrl = outputData.image.url;
+      maskUrl = outputData.image.url;
+      if (env.enableDebugLogs) {
+        console.log("[Segmentation] Using image.url for output");
+      }
+    }
+    // Priority 3: Use first individual mask (B/W fallback)
+    else if (outputData.masks && outputData.masks.length > 0) {
       maskUrl = outputData.masks[0].url || outputData.masks[0];
       segmentedImageUrl = maskUrl;
+      if (env.enableDebugLogs) {
+        console.log("[Segmentation] Using masks[0] (B/W fallback)");
+      }
     } else {
       throw new Error("No mask returned from SAM2");
     }
