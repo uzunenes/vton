@@ -89,6 +89,12 @@ export interface PipelineInputs {
   userImageBlob?: Blob;
   userImageUrl?: string;
   userPoseLandmarks?: PoseLandmark[];
+  // User metadata for dynamic prompts
+  userAge?: number;
+  userGender?: 'male' | 'female' | 'other';
+  userCountry?: string;
+  // Interactive segmentation hints
+  segmentationPrompts?: { x: number; y: number; label: number }[];
 }
 
 export type GarmentCategory = 'tops' | 'bottoms' | 'one-piece' | 'accessory';

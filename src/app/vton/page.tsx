@@ -34,6 +34,15 @@ export default function VtonPage() {
   const [isStudioActive, setIsStudioActive] = useState(false);
   const [vtonCategory, setVtonCategory] = useState<VtonCategory>("tops");
   const [garmentLandmarks, setGarmentLandmarks] = useState<any>(null);
+  
+  // User metadata for dynamic prompts
+  const [userAge, setUserAge] = useState<number>(30);
+  const [userGender, setUserGender] = useState<'male' | 'female' | 'other'>('male');
+  const [userCountry, setUserCountry] = useState<string>('Turkey');
+  
+  // Interactive segmentation hints (SAM3 points)
+  const [segmentationPrompts, setSegmentationPrompts] = useState<{ x: number; y: number; label: number }[]>([]);
+  
   const garmentCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Pipeline state
@@ -110,8 +119,21 @@ export default function VtonPage() {
       garmentCategory: vtonCategory as GarmentCategory,
       userImageUrl: finalUserUrl,
       userPoseLandmarks: garmentLandmarks,
+      userAge,
+      userGender,
+      userCountry,
+      segmentationPrompts,
     });
-  }, [pipeline, garmentImageUrl, userImageUrl, vtonCategory, garmentLandmarks]);
+  }, [pipeline, garmentImageUrl, userImageUrl, vtonCategory, garmentLandmarks, userAge, userGender, userCountry, segmentationPrompts]);
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!garmentCanvasRef.current) return;
+    const rect = garmentCanvasRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 1024;
+    const y = ((e.clientY - rect.top) / rect.height) * 1024;
+    const newPrompt = { x: Math.round(x), y: Math.round(y), label: 1 };
+    setSegmentationPrompts(prev => [...prev, newPrompt]);
+  };
 
   // Handle approval decision
   const handleApproval = useCallback(async (decision: ApprovalDecision) => {
@@ -173,9 +195,21 @@ export default function VtonPage() {
           ctx.fill();
         }
       });
+
+      // Draw segmentation prompts
+      segmentationPrompts.forEach(p => {
+        ctx.fillStyle = "#22c55e"; // Green color for prompts
+        ctx.beginPath();
+        ctx.arc((p.x / 1024) * canvas.width, (p.y / 1024) * canvas.height, 8, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+
       URL.revokeObjectURL(img.src);
     };
-  }, [garmentLandmarks, garmentImage]);
+  }, [garmentLandmarks, garmentImage, segmentationPrompts]);
 
   // Get selected VTON image URL
   const getDisplayImageUrl = () => {
@@ -264,21 +298,78 @@ export default function VtonPage() {
               <div className="space-y-4">
                 {/* Garment Category */}
                 <div>
-                  <label className="text-sm text-gray-400 mb-2 block">Category</label>
+                  <label className="text-sm text-gray-400 mb-2 block">Garment Type</label>
                   <select
                     value={vtonCategory}
                     onChange={(e) => setVtonCategory(e.target.value as VtonCategory)}
                     className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white"
                   >
-                    <option value="tops">Tops</option>
+                    <option value="tops">Tops / T-Shirts</option>
                     <option value="bottoms">Bottoms</option>
                     <option value="one-piece">One-Piece</option>
                     <option value="accessory">Accessory</option>
                   </select>
                 </div>
 
+                {/* Preview and Selection (Handled below) */}
+
+                {/* Preview */}
+                {garmentImage && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="relative bg-slate-900 rounded overflow-hidden cursor-crosshair border border-slate-700"
+                  >
+                    <canvas 
+                      ref={garmentCanvasRef} 
+                      className="w-full h-auto" 
+                      onClick={handleCanvasClick}
+                    />
+                    <div className="absolute bottom-2 left-2 bg-black/60 text-[10px] px-2 py-1 rounded text-white pointer-events-none">
+                      {segmentationPrompts.length > 0 ? `${segmentationPrompts.length} points selected` : 'Click to select tshirt'}
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Metadata Fields */}
+                <div className="pt-4 space-y-3 border-t border-slate-800">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">User Info (for AI Prompt)</h3>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-gray-400 block mb-1">Age</label>
+                      <input 
+                        type="number" 
+                        value={userAge} 
+                        onChange={(e) => setUserAge(parseInt(e.target.value))}
+                        className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-gray-400 block mb-1">Gender</label>
+                      <select 
+                        value={userGender} 
+                        onChange={(e) => setUserGender(e.target.value as any)}
+                        className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-white"
+                      >
+                        <option value="male">Male</option>
+                        <option value="female">Female</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-400 block mb-1">Country / Scene</label>
+                    <input 
+                      type="text" 
+                      value={userCountry} 
+                      onChange={(e) => setUserCountry(e.target.value)}
+                      placeholder="e.g. Turkey, playing ball"
+                      className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-white"
+                    />
+                  </div>
+                </div>
+
                 {/* Upload Input */}
-                <div>
+                <div className="pt-2">
                   <input
                     type="file"
                     id="garment-upload"
@@ -288,22 +379,19 @@ export default function VtonPage() {
                   />
                   <label
                     htmlFor="garment-upload"
-                    className="block w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-center cursor-pointer transition"
+                    className="block w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-center cursor-pointer transition text-sm font-medium"
                   >
-                    Choose Image
+                    Upload Model (Manken)
                   </label>
+                  {segmentationPrompts.length > 0 && (
+                    <button 
+                      onClick={() => setSegmentationPrompts([])}
+                      className="w-full mt-2 text-[10px] text-red-400 hover:text-red-300 transition"
+                    >
+                      Reset Selection
+                    </button>
+                  )}
                 </div>
-
-                {/* Preview */}
-                {garmentImage && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="relative bg-slate-900 rounded overflow-hidden"
-                  >
-                    <canvas ref={garmentCanvasRef} className="w-full h-auto" />
-                  </motion.div>
-                )}
               </div>
             </div>
           </div>
@@ -320,6 +408,9 @@ export default function VtonPage() {
                 {isStudioActive ? (
                   <CameraView
                     onCapture={handleCapture}
+                    isProcessing={pipeline.state?.status === 'running'}
+                    garmentBlob={garmentImage}
+                    onGarmentPoseDetected={setGarmentLandmarks}
                     onClose={() => setIsStudioActive(false)}
                   />
                 ) : (
